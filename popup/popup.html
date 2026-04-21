@@ -5,217 +5,222 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Lead Extractor Pro</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="popup.css">
 </head>
 
 <body>
-  <div class="container">
-    <!-- Header -->
-    <header class="header">
-      <div class="header-left">
-        <!-- <span class="logo">&heart</span> -->
-        <div class="title-group">
-          <div class="title-copy">
-            <div class="title-line">
-              <h1>Lead Extractor Pro</h1>
-              <span class="version-badge" id="versionBadge">v1.0.0</span>
-            </div>
-            <div class="header-credit">
-              <span>Created by Rohit Bhure</span>
-              <a href="https://github.com/rohitbhure65" target="_blank" rel="noopener noreferrer">GitHub</a>
-            </div>
+  <div class="app-container">
+    <!-- Sidebar: Controls & Settings -->
+    <aside class="sidebar">
+      <header class="sidebar-header">
+        <div class="brand">
+          <div class="brand-icon">L</div>
+          <div class="brand-info">
+            <h1>Lead Extractor</h1>
+            <span class="version" id="versionBadge">v1.0.0</span>
           </div>
         </div>
-      </div>
-      <button class="close-window-btn" id="closeWindowBtn" title="Close">&times;</button>
-    </header>
+      </header>
 
-    <!-- Extraction Controls -->
-    <section class="extraction-controls">
-      <div class="extraction-settings">
-        <div class="setting-group">
-          <label for="maxLeadsInput">Max results</label>
-          <input type="number" id="maxLeadsInput" min="1" max="5000" value="100">
-        </div>
-        <div class="setting-group">
-          <label for="countryCodeInput">Country code</label>
-          <div class="country-code-field">
-            <span class="country-code-prefix">+</span>
-            <input type="text" id="countryCodeInput" value="91" inputmode="numeric" maxlength="4" placeholder="91"
-              aria-label="Country code digits">
+      <div class="sidebar-scroll">
+        <section class="extraction-controls">
+          <div class="section-title">Extraction Settings</div>
+          
+          <div class="settings-grid">
+            <div class="setting-item">
+              <label for="maxLeadsInput">Max Results</label>
+              <input type="number" id="maxLeadsInput" min="1" max="5000" value="100">
+            </div>
+
+            <div class="setting-item">
+              <label for="countryCodeInput">Country Code</label>
+              <div class="input-with-prefix">
+                <span class="prefix">+</span>
+                <input type="text" id="countryCodeInput" value="91" maxlength="4">
+              </div>
+            </div>
           </div>
-        </div>
-        <div class="setting-toggles">
-          <label class="toggle-row">
-            <span>No limit</span>
-            <div class="toggle-switch">
+
+          <div class="toggle-group">
+            <label class="toggle">
               <input type="checkbox" id="noLimitInput">
-              <span class="toggle-slider"></span>
-            </div>
-          </label>
-          <label class="toggle-row">
-            <span>Phone only</span>
-            <div class="toggle-switch">
+              <span class="slider"></span>
+              <span class="label">No Limit</span>
+            </label>
+            <label class="toggle">
               <input type="checkbox" id="requirePhoneInput">
-              <span class="toggle-slider"></span>
+              <span class="slider"></span>
+              <span class="label">Phone Only</span>
+            </label>
+          </div>
+
+          <div class="setting-item">
+            <label for="whatsAppMessageInput">WhatsApp Template</label>
+            <textarea id="whatsAppMessageInput" rows="2"></textarea>
+          </div>
+
+          <div class="action-group">
+            <button class="btn-primary" id="startExtraction">
+              <span class="icon">▶</span> Start Scan
+            </button>
+            <button class="btn-outline" id="deduplicate">
+              <span class="icon">⟳</span> Clean Duplicates
+            </button>
+            <button class="btn-save" id="saveCurrentLead" title="Save current page (Ctrl+S)">
+              <span class="icon">💾</span> Save Current
+            </button>
+          </div>
+        </section>
+
+        <div class="status-box">
+          <div class="status-label">Status</div>
+          <div class="status-text" id="extractionStatus">Ready</div>
+          <div class="progress-wrap" id="progressContainer" style="display: none;">
+            <div class="progress-bar">
+              <div class="progress-fill" id="progressFill"></div>
             </div>
-          </label>
+            <span class="progress-pct" id="progressText">0%</span>
+          </div>
         </div>
       </div>
-      <div class="extraction-status" id="extractionStatus">Ready to scan current page</div>
-      <div class="control-buttons">
-        <button class="btn-primary" id="startExtraction">
-          <span class="btn-icon">▶</span> Start Extraction
+      
+      <footer class="sidebar-footer">
+        <p>Created by Rohit Bhure</p>
+      </footer>
+    </aside>
+
+    <!-- Main Content: Dashboard -->
+    <main class="main-content">
+      <header class="content-header">
+        <div class="tabs">
+          <button class="tab active" id="tabExtracted">Extracted</button>
+          <button class="tab" id="tabSaved">Saved</button>
+        </div>
+        <div class="lead-info-badge">
+          <span class="count" id="leadCount">0 leads</span>
+        </div>
+      </header>
+
+      <div class="content-body">
+        <!-- Extracted Leads View -->
+        <div id="extractedLeadsContainer" class="view-container active">
+          <div class="toolbar">
+            <div class="search-box">
+              <span class="search-icon">🔍</span>
+              <input type="text" id="searchInput" placeholder="Search leads...">
+            </div>
+            <select id="filterSelect" class="filter-dropdown">
+              <option value="all">All Leads</option>
+              <option value="email">Has Email</option>
+              <option value="phone">Has Phone</option>
+              <option value="company">Has Company</option>
+              <option value="rating">Top Rated</option>
+            </select>
+          </div>
+
+          <div class="leads-list" id="leadsList">
+            <div class="empty-state">
+              <div class="empty-icon">📂</div>
+              <p>No leads found. Start a scan to find opportunities.</p>
+            </div>
+          </div>
+          <div class="list-footer" id="listStatus"></div>
+        </div>
+
+        <!-- Saved Leads View -->
+        <div id="savedLeadsContainer" class="view-container">
+          <div class="table-scroll">
+            <table class="saved-table">
+              <thead>
+                <tr>
+                  <th>Business Name</th>
+                </tr>
+              </thead>
+              <tbody id="savedLeadsBody">
+                <tr><td class="empty-td">No manually saved leads yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sticky Footer Actions -->
+      <footer class="export-footer">
+        <button class="btn-export csv" id="exportCSV">
+          <span class="icon">📥</span> CSV
         </button>
-        <button class="btn-secondary" id="stopExtraction" disabled>
-          <span class="btn-icon">■</span> Stop
+        <button class="btn-export excel" id="exportExcel">
+          <span class="icon">📊</span> Excel
         </button>
-      </div>
-      <div class="progress-container" id="progressContainer" style="display: none;">
-        <div class="progress-bar">
-          <div class="progress-fill" id="progressFill"></div>
-        </div>
-        <span class="progress-text" id="progressText">0%</span>
-      </div>
-      <div class="message-template-group">
-        <label for="whatsAppMessageInput">Default WhatsApp message</label>
-        <textarea id="whatsAppMessageInput" rows="3" placeholder="Enter WhatsApp message template..."></textarea>
-      </div>
-      <button class="btn-text" id="deduplicate">
-        <span class="btn-icon">⟳</span> Deduplicate
-      </button>
-      <button class="btn-primary save-lead-btn" id="saveCurrentLead"
-        title="Save lead from current page to dashboard (Ctrl+S)">
-        <span class="btn-icon">💾</span> Save Current Lead
-      </button>
-    </section>
+        <button class="btn-danger-link" id="clearAll">
+          <span class="icon">🗑</span> Clear All
+        </button>
+      </footer>
+    </main>
 
-    <!-- Lead Dashboard -->
-    <section class="dashboard">
-      <div class="dashboard-header">
-        <h2>Lead Dashboard</h2>
-        <span class="lead-count" id="leadCount">0 leads</span>
-      </div>
-      <div class="search-filter">
-        <input type="text" id="searchInput" placeholder="Search leads...">
-        <select id="filterSelect">
-          <option value="all">All</option>
-          <option value="email">Has Email</option>
-          <option value="phone">Has Phone</option>
-          <option value="company">Has Company</option>
-          <option value="rating">Has Rating</option>
-        </select>
-      </div>
-      <div class="leads-list" id="leadsList">
-        <div class="empty-state">No leads extracted yet</div>
-      </div>
-      <div class="list-status" id="listStatus"></div>
-    </section>
-
-    <!-- Export Actions -->
-    <section class="export-actions">
-      <button class="btn-export" id="exportCSV">
-        <span class="btn-icon">📥</span> Export CSV
-      </button>
-      <button class="btn-export" id="exportExcel">
-        <span class="btn-icon">📊</span> Export Excel
-      </button>
-      <button class="btn-danger" id="clearAll">
-        <span class="btn-icon">🗑</span> Clear All
-      </button>
-    </section>
-
-    <footer class="footer-credit">
-      <span>Created by Rohit Bhure</span>
-      <a href="https://github.com/rohitbhure65" target="_blank" rel="noopener noreferrer">GitHub Profile</a>
-    </footer>
-
-    <!-- Add Lead Modal -->
-    <div class="modal" id="addLeadModal" style="display: none;">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h2>Add Lead</h2>
-          <button class="modal-close" id="closeModal">&times;</button>
-        </div>
-        <form id="addLeadForm">
-          <div class="form-group">
-            <label>Name</label>
-            <input type="text" name="name" required>
-          </div>
-          <div class="form-group">
-            <label>Email</label>
-            <input type="email" name="email">
-          </div>
-          <div class="form-group">
-            <label>Phone</label>
-            <input type="tel" name="phone">
-          </div>
-          <div class="form-group">
-            <label>Company</label>
-            <input type="text" name="company">
-          </div>
-          <div class="form-group">
-            <label>Job Title</label>
-            <input type="text" name="jobTitle">
-          </div>
-          <div class="form-group">
-            <label>Website</label>
-            <input type="url" name="website">
-          </div>
-          <div class="form-group">
-            <label>Address</label>
-            <input type="text" name="address">
-          </div>
-          <button type="submit" class="btn-primary">Save Lead</button>
-        </form>
-      </div>
-    </div>
-
-    <!-- Lead Edit Modal -->
-    <div class="modal" id="editLeadModal" style="display: none;">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h2>Edit Lead</h2>
-          <button class="modal-close" id="closeEditModal">&times;</button>
-        </div>
-        <form id="editLeadForm">
-          <input type="hidden" name="id">
-          <div class="form-group">
-            <label>Name</label>
-            <input type="text" name="name" required>
-          </div>
-          <div class="form-group">
-            <label>Email</label>
-            <input type="email" name="email">
-          </div>
-          <div class="form-group">
-            <label>Phone</label>
-            <input type="tel" name="phone">
-          </div>
-          <div class="form-group">
-            <label>Company</label>
-            <input type="text" name="company">
-          </div>
-          <div class="form-group">
-            <label>Job Title</label>
-            <input type="text" name="jobTitle">
-          </div>
-          <div class="form-group">
-            <label>Website</label>
-            <input type="url" name="website">
-          </div>
-          <div class="form-group">
-            <label>Address</label>
-            <input type="text" name="address">
-          </div>
-          <button type="submit" class="btn-primary">Update Lead</button>
-        </form>
-      </div>
-    </div>
-
-    <!-- Toast Notification -->
-    <div class="toast" id="toast"></div>
+    <button class="floating-close" id="closeWindowBtn">&times;</button>
   </div>
+
+  <!-- Modals -->
+  <div class="modal-overlay" id="addLeadModal" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>Add New Lead</h2>
+        <button class="close-modal" id="closeModal">&times;</button>
+      </div>
+      <form id="addLeadForm" class="modal-form">
+        <div class="form-row">
+          <div class="form-field"><label>Name</label><input type="text" name="name" required></div>
+          <div class="form-field"><label>Email</label><input type="email" name="email"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-field"><label>Phone</label><input type="tel" name="phone"></div>
+          <div class="form-field"><label>Company</label><input type="text" name="company"></div>
+        </div>
+        <div class="form-field"><label>Website</label><input type="url" name="website"></div>
+        <div class="form-field"><label>Address</label><input type="text" name="address"></div>
+        <button type="submit" class="btn-submit">Add Lead</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="editLeadModal" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>Edit Lead</h2>
+        <button class="close-modal" id="closeEditModal">&times;</button>
+      </div>
+      <form id="editLeadForm" class="modal-form">
+        <input type="hidden" name="id">
+        <div class="form-row">
+          <div class="form-field"><label>Name</label><input type="text" name="name" required></div>
+          <div class="form-field"><label>Email</label><input type="email" name="email"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-field"><label>Phone</label><input type="tel" name="phone"></div>
+          <div class="form-field"><label>Company</label><input type="text" name="company"></div>
+        </div>
+        <div class="form-field"><label>Website</label><input type="url" name="website"></div>
+        <div class="form-field"><label>Address</label><input type="text" name="address"></div>
+        <button type="submit" class="btn-submit">Update Lead</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="savedLeadViewModal" style="display: none;">
+    <div class="modal-card wide">
+      <div class="modal-header">
+        <h2>Lead Details</h2>
+        <button class="close-modal" id="closeSavedLeadViewModal">&times;</button>
+      </div>
+      <div id="savedLeadViewContent" class="modal-body"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
 
   <script src="../libs/papaparse.min.js"></script>
   <script src="../libs/xlsx.min.js"></script>
@@ -224,5 +229,7 @@
   <script src="../utils/deduplicator.js"></script>
   <script src="popup.js"></script>
 </body>
+
+</html></body>
 
 </html>

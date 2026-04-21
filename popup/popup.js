@@ -6,14 +6,16 @@ class LeadExtractor {
 
   constructor() {
     this.leads = [];
+    this.extractedLeads = [];
+    this.savedLeads = [];
     this.filteredLeads = [];
+    this.activeTab = 'extracted'; // 'extracted' or 'saved'
     this.renderedLeadCount = 0;
     this.renderBatchSize = 25;
     this.isExtracting = false;
     this.activeSessionId = null;
     this.currentTabId = null;
     this.currentSessionSaved = 0;
-    this.autoExportOnStop = false;
     this.searchQuery = '';
     this.typeFilter = 'all';
 
@@ -66,6 +68,11 @@ class LeadExtractor {
   async loadLeads() {
     const storedLeads = await Storage.getAllLeads();
     this.leads = storedLeads.map((lead) => this.normalizeStoredLead(lead));
+    
+    // Separate leads by type
+    this.extractedLeads = this.leads.filter(l => !l.type || l.type === 'extracted');
+    this.savedLeads = this.leads.filter(l => l.type === 'saved');
+    
     this.applyLeadFilters();
   }
 
@@ -73,9 +80,12 @@ class LeadExtractor {
   bindEvents() {
     // Extraction
     document.getElementById('startExtraction').addEventListener('click', () => this.startExtraction());
-    document.getElementById('stopExtraction').addEventListener('click', () => this.stopExtraction());
     document.getElementById('deduplicate').addEventListener('click', () => this.deduplicate());
     document.getElementById('saveCurrentLead').addEventListener('click', () => this.requestSaveCurrentLead());
+    
+    // Tabs
+    document.getElementById('tabExtracted').addEventListener('click', () => this.handleTabClick('extracted'));
+    document.getElementById('tabSaved').addEventListener('click', () => this.handleTabClick('saved'));
     document.getElementById('maxLeadsInput').addEventListener('change', () => this.handleLimitChange());
     document.getElementById('noLimitInput').addEventListener('change', () => this.handleNoLimitChange());
     document.getElementById('requirePhoneInput').addEventListener('change', () => this.handleRequirePhoneChange());
@@ -101,6 +111,7 @@ class LeadExtractor {
     document.getElementById('addLeadForm').addEventListener('submit', (e) => this.handleAddLead(e));
     document.getElementById('closeEditModal').addEventListener('click', () => this.closeEditModal());
     document.getElementById('editLeadForm').addEventListener('submit', (e) => this.handleEditLead(e));
+    document.getElementById('closeSavedLeadViewModal').addEventListener('click', () => this.closeSavedLeadViewModal());
     document.getElementById('closeWindowBtn').addEventListener('click', () => window.close());
   }
 
@@ -129,6 +140,7 @@ class LeadExtractor {
       ...this.sanitizeLeadForStorage(leadData),
       name: customName.trim(),
       id: this.generateId(),
+      type: 'saved',
       contacted: false,
       contactedAt: null,
       createdAt: Date.now(),
@@ -229,7 +241,6 @@ class LeadExtractor {
 
     this.isExtracting = true;
     this.currentSessionSaved = 0;
-    this.autoExportOnStop = false;
     this.updateExtractionButtons();
     this.showProgress(0);
     this.setExtractionStatus('Starting extraction...');
@@ -309,25 +320,8 @@ class LeadExtractor {
     }
   }
 
-  async stopExtraction() {
-    if (!this.isExtracting || !this.currentTabId) return;
-
-    this.autoExportOnStop = true;
-    this.setExtractionStatus('Stopping extraction and exporting saved leads...');
-
-    try {
-      await chrome.tabs.sendMessage(this.currentTabId, {
-        action: 'stopExtraction',
-        sessionId: this.activeSessionId
-      });
-    } catch (error) {
-      console.error('Stop extraction error:', error);
-    }
-  }
-
   updateExtractionButtons() {
     document.getElementById('startExtraction').disabled = this.isExtracting;
-    document.getElementById('stopExtraction').disabled = !this.isExtracting;
   }
 
   async getExtractionTab() {
@@ -359,6 +353,7 @@ class LeadExtractor {
       const preparedLead = {
         ...this.sanitizeLeadForStorage(rawLead),
         id: this.generateId(),
+        type: 'extracted',
         contacted: false,
         contactedAt: null,
         createdAt: Date.now(),
@@ -441,8 +436,9 @@ class LeadExtractor {
 
   applyLeadFilters() {
     const searchTerm = this.searchQuery.toLowerCase().trim();
+    const sourceLeads = this.activeTab === 'extracted' ? this.extractedLeads : this.savedLeads;
 
-    const filtered = this.leads.filter((lead) => {
+    const filtered = sourceLeads.filter((lead) => {
       const matchesSearch = !searchTerm || [
         lead.name,
         lead.email,
@@ -475,7 +471,11 @@ class LeadExtractor {
       ? filtered.sort((a, b) => this.getRatingValue(b.rating) - this.getRatingValue(a.rating))
       : filtered;
 
-    this.renderLeads(true);
+    if (this.activeTab === 'extracted') {
+      this.renderLeads(true);
+    } else {
+      this.renderSavedLeads();
+    }
   }
 
   // Lead display
@@ -510,21 +510,25 @@ class LeadExtractor {
         <div class="lead-info">
           <div class="lead-name">${lead.name || 'Unknown'}</div>
           <div class="lead-details">
-            ${lead.phone || lead.website || lead.address || lead.category || lead.company || 'No details'}
+            ${lead.phone ? `<span>📞 ${lead.phone}</span>` : ''}
+            ${lead.website ? `<span>🌐 ${lead.website}</span>` : ''}
+            ${!lead.phone && !lead.website ? 'No contact info' : ''}
           </div>
           <div class="lead-meta">
-            ${lead.contacted ? `Contacted${lead.contactedAt ? ` on ${new Date(lead.contactedAt).toLocaleDateString()}` : ''}` : 'Not contacted yet'}
-            ${lead.source ? `<div class="lead-source">${lead.source.slice(0, 40)}${lead.source.length > 40 ? '...' : ''}</div>` : ''}
+            <span class="status-badge ${lead.contacted ? 'contacted' : ''}">
+              ${lead.contacted ? '✓ Contacted' : '○ Not Contacted'}
+            </span>
+            ${lead.source ? `<span class="source">📍 ${lead.source.slice(0, 30)}</span>` : ''}
           </div>
         </div>
         <div class="lead-actions">
           <button type="button" class="lead-action-btn whatsapp" title="Send WhatsApp" data-action="whatsapp" data-id="${lead.id}"
-            ${this.hasWhatsAppNumber(lead) ? '' : 'disabled'}>WA</button>
+            ${this.hasWhatsAppNumber(lead) ? '' : 'disabled'}>💬</button>
           <button type="button" class="lead-action-btn contact ${lead.contacted ? 'active' : ''}" title="Mark contacted" data-action="contact" data-id="${lead.id}">
-            ${lead.contacted ? '✓' : '☐'}
+            ${lead.contacted ? '✓' : '○'}
           </button>
-          <button type="button" class="lead-action-btn edit" title="Edit" data-action="edit" data-id="${lead.id}">✏</button>
-          <button type="button" class="lead-action-btn delete" title="Delete" data-action="delete" data-id="${lead.id}">🗑</button>
+          <button type="button" class="lead-action-btn edit" title="Edit" data-action="edit" data-id="${lead.id}">✏️</button>
+          <button type="button" class="lead-action-btn delete" title="Delete" data-action="delete" data-id="${lead.id}">🗑️</button>
         </div>
       </div>
     `).join('');
@@ -575,7 +579,7 @@ class LeadExtractor {
   updateListStatus() {
     const listStatus = document.getElementById('listStatus');
 
-    if (!this.filteredLeads.length) {
+    if (this.activeTab !== 'extracted' || !this.filteredLeads.length) {
       listStatus.textContent = '';
       return;
     }
@@ -584,6 +588,105 @@ class LeadExtractor {
     listStatus.textContent = hasMore
       ? `Showing ${this.renderedLeadCount} of ${this.filteredLeads.length}`
       : `Showing all ${this.filteredLeads.length}`;
+  }
+
+  // Saved Leads Display
+  renderSavedLeads() {
+    const body = document.getElementById('savedLeadsBody');
+    if (!body) return;
+
+    if (this.filteredLeads.length === 0) {
+      body.innerHTML = `<tr><td class="empty-state">No saved leads matching filters</td></tr>`;
+      return;
+    }
+
+    body.innerHTML = this.filteredLeads.map(lead => `
+      <tr data-id="${lead.id}">
+        <td>${lead.name || 'Unknown Lead'}</td>
+      </tr>
+    `).join('');
+
+    body.querySelectorAll('tr[data-id]').forEach(row => {
+      row.addEventListener('click', () => this.showSavedLeadDetails(row.dataset.id));
+    });
+  }
+
+  showSavedLeadDetails(id) {
+    const lead = this.savedLeads.find(l => l.id === id);
+    if (!lead) return;
+
+    const content = document.getElementById('savedLeadViewContent');
+    content.innerHTML = `
+      <div class="lead-row ${lead.contacted ? 'contacted' : ''}" data-id="${lead.id}" style="border: none; box-shadow: none; transform: none;">
+        <div class="lead-info">
+          <div class="lead-name" style="font-size: 18px;">${lead.name || 'Unknown'}</div>
+          <div class="lead-details" style="white-space: normal;">
+            ${lead.phone ? `<div><strong>Phone:</strong> ${lead.phone}</div>` : ''}
+            ${lead.email ? `<div><strong>Email:</strong> ${lead.email}</div>` : ''}
+            ${lead.website ? `<div><strong>Website:</strong> <a href="${lead.website}" target="_blank">${lead.website}</a></div>` : ''}
+            ${lead.company ? `<div><strong>Company:</strong> ${lead.company}</div>` : ''}
+            ${lead.address ? `<div><strong>Address:</strong> ${lead.address}</div>` : ''}
+            ${lead.category ? `<div><strong>Category:</strong> ${lead.category}</div>` : ''}
+            ${lead.rating ? `<div><strong>Rating:</strong> ⭐ ${lead.rating} (${lead.reviews} reviews)</div>` : ''}
+          </div>
+          <div class="lead-meta" style="margin-top: 12px;">
+            <span class="status-badge ${lead.contacted ? 'contacted' : ''}">
+              ${lead.contacted ? `✓ Contacted on ${new Date(lead.contactedAt).toLocaleDateString()}` : '○ Not Contacted Yet'}
+            </span>
+          </div>
+        </div>
+        <div class="lead-actions" style="opacity: 1; align-self: flex-start;">
+          <button type="button" class="lead-action-btn whatsapp" title="Send WhatsApp" data-action="whatsapp" data-id="${lead.id}"
+            ${this.hasWhatsAppNumber(lead) ? '' : 'disabled'}>💬</button>
+          <button type="button" class="lead-action-btn contact ${lead.contacted ? 'active' : ''}" title="Mark contacted" data-action="contact" data-id="${lead.id}">
+            ${lead.contacted ? '✓' : '○'}
+          </button>
+          <button type="button" class="lead-action-btn edit" title="Edit" data-action="edit" data-id="${lead.id}">✏️</button>
+          <button type="button" class="lead-action-btn delete" title="Delete" data-action="delete" data-id="${lead.id}">🗑️</button>
+        </div>
+      </div>
+    `;
+
+    // Bind actions for this specific row
+    content.querySelector('.lead-actions').addEventListener('click', (e) => {
+      this.handleLeadActionClick(e);
+      // If deleted, close modal
+      const action = e.target.closest('button')?.dataset?.action;
+      if (action === 'delete') {
+        this.closeSavedLeadViewModal();
+      }
+    });
+
+    document.getElementById('savedLeadViewModal').style.display = 'flex';
+  }
+
+  closeSavedLeadViewModal() {
+    document.getElementById('savedLeadViewModal').style.display = 'none';
+  }
+
+  closeModal() {
+    document.getElementById('addLeadModal').style.display = 'none';
+  }
+
+  closeEditModal() {
+    document.getElementById('editLeadModal').style.display = 'none';
+  }
+
+  handleTabClick(tabId) {
+    this.activeTab = tabId;
+    
+    // Update UI
+    document.getElementById('tabExtracted').classList.toggle('active', tabId === 'extracted');
+    document.getElementById('tabSaved').classList.toggle('active', tabId === 'saved');
+    
+    const extractedContainer = document.getElementById('extractedLeadsContainer');
+    const savedContainer = document.getElementById('savedLeadsContainer');
+    
+    extractedContainer.classList.toggle('active', tabId === 'extracted');
+    savedContainer.classList.toggle('active', tabId === 'saved');
+    
+    this.applyLeadFilters();
+    this.updateCounts();
   }
 
   // Lead management
@@ -904,7 +1007,9 @@ class LeadExtractor {
   }
 
   updateCounts() {
-    document.getElementById('leadCount').textContent = `${this.leads.length} leads`;
+    const count = this.activeTab === 'extracted' ? this.extractedLeads.length : this.savedLeads.length;
+    const label = this.activeTab === 'extracted' ? 'extracted leads' : 'saved leads';
+    document.getElementById('leadCount').textContent = `${count} ${label}`;
   }
 
   setExtractionStatus(message) {

@@ -19,15 +19,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message.action === 'stopExtraction') {
-    if (!message.sessionId || message.sessionId === extractionState.sessionId) {
-      extractionState.stopRequested = true;
-    }
-
-    sendResponse({ stopped: true });
-    return false;
-  }
-
   if (message.action === 'autoSendWhatsApp') {
     autoSendWhatsAppMessage()
       .then(() => sendResponse({ sent: true }))
@@ -232,7 +223,7 @@ async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }
   let previousLeadCount = 0;
   let previousLastCardKey = '';
 
-  while (!extractionState.stopRequested) {
+  while (true) {
     scrollContainer = findGoogleMapsScrollContainer() || scrollContainer;
 
     // Load more results if available
@@ -314,7 +305,7 @@ async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }
     await wait(1500);
   }
 
-  const stopped = extractionState.stopRequested;
+  const stopped = false;
 
   // IMPROVED: Better final message
   let finalStatus = stopped ? `Stopped.` : `Completed.`;
@@ -359,7 +350,7 @@ async function enhancedAutoScroll(container, options = {}) {
   log('Starting enhanced auto-scroll');
   log(`Initial card count: ${getGoogleMapsResultCards().length}`);
 
-  for (let attempt = 0; attempt < maxAttempts && !extractionState.stopRequested; attempt++) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const beforeCards = getGoogleMapsResultCards().length;
     const beforeScrollHeight = container.scrollHeight;
 
