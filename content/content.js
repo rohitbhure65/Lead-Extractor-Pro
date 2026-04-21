@@ -42,15 +42,13 @@ async function handleExtractionRequest(message) {
     if (isGoogleMapsPage()) {
       return await extractGoogleMapsLeads({
         keywords: message.keywords || [],
-        source: message.source || window.location.href,
         sessionId,
         options
       });
     }
 
     const leads = extractStandardLeads(message.keywords || [], options).map((lead) => ({
-      ...lead,
-      source: message.source || window.location.href
+      ...lead
     }));
 
     return { leads, savedCount: leads.length, stopped: false };
@@ -76,10 +74,10 @@ function extractStandardLeads(keywords = [], options = {}) {
   return filteredLeads
     .map(normalizeLead)
     .filter((lead) => matchesLeadRequirements(lead, options))
-    .filter((lead) => lead.name || lead.email || lead.phone || lead.company || lead.website);
+    .filter((lead) => lead.name || lead.phone || lead.company || lead.website || lead.address);
 }
 
-async function extractGoogleMapsLeads({ keywords = [], source, sessionId, options = {} }) {
+async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }) {
   const maxLeads = options.noLimit ? null : parsePositiveInt(options.maxLeads);
   const seen = new Set();
   const bufferedLeads = [];
@@ -95,7 +93,7 @@ async function extractGoogleMapsLeads({ keywords = [], source, sessionId, option
 
   while (!extractionState.stopRequested) {
     scrollContainer = findGoogleMapsScrollContainer() || scrollContainer;
-    const batch = extractGoogleMapsVisibleLeads({ keywords, source, seen, maxLeads, options });
+    const batch = extractGoogleMapsVisibleLeads({ keywords, seen, maxLeads, options });
     const visibleCards = getGoogleMapsResultCards();
     const lastCardKey = buildCardSnapshotKey(visibleCards[visibleCards.length - 1]);
 
@@ -170,7 +168,7 @@ async function extractGoogleMapsLeads({ keywords = [], source, sessionId, option
   };
 }
 
-function extractGoogleMapsVisibleLeads({ keywords, source, seen, maxLeads, options = {} }) {
+function extractGoogleMapsVisibleLeads({ keywords, seen, maxLeads, options = {} }) {
   const cards = getGoogleMapsResultCards();
 
   const results = [];
@@ -180,7 +178,7 @@ function extractGoogleMapsVisibleLeads({ keywords, source, seen, maxLeads, optio
       break;
     }
 
-    const lead = extractGoogleMapsCardLead(card, source);
+    const lead = extractGoogleMapsCardLead(card);
     if (!lead) {
       continue;
     }
@@ -202,7 +200,7 @@ function extractGoogleMapsVisibleLeads({ keywords, source, seen, maxLeads, optio
     results.push(lead);
   }
 
-  const selectedPlace = extractSelectedGoogleMapsPlace(source);
+  const selectedPlace = extractSelectedGoogleMapsPlace();
   if (selectedPlace && (!maxLeads || seen.size < maxLeads)) {
     if (matchesLeadRequirements(selectedPlace, options) && (!keywords.length || matchesKeywords(selectedPlace, keywords))) {
       const selectedKey = buildLeadKey(selectedPlace);
@@ -224,7 +222,7 @@ function matchesLeadRequirements(lead, options = {}) {
   return true;
 }
 
-function extractGoogleMapsCardLead(card, source) {
+function extractGoogleMapsCardLead(card) {
   const rawText = card.innerText || '';
   const text = normalizeWhitespace(rawText);
   if (!text) {
@@ -243,7 +241,6 @@ function extractGoogleMapsCardLead(card, source) {
   const website = card.querySelector('a[href^="http"]:not([href*="google.com"])')?.href || '';
 
   const addressLine = lines.find((line) => /road|rd\b|street|st\b|floor|scheme|park|nagar|indore|near|colony|sector|tower|hotel|marg|block|avenue|area/i.test(line)) || '';
-  const statusLine = lines.find((line) => /open|closed/i.test(line)) || '';
   const categoryLine = lines.find((line) =>
     line !== name &&
     !line.includes('★') &&
@@ -251,7 +248,6 @@ function extractGoogleMapsCardLead(card, source) {
     !/open|closed/i.test(line) &&
     !/(reserve a table|order online|website|directions|call)/i.test(line)
   ) || '';
-  const servicesLine = lines.find((line) => /dine-in|delivery|takeaway|takeout|kerbside|drive-through|pickup/i.test(line)) || '';
 
   const lead = normalizeLead({
     name,
@@ -259,12 +255,9 @@ function extractGoogleMapsCardLead(card, source) {
     phone: phoneMatch ? phoneMatch[0].trim() : '',
     website,
     address: addressLine,
-    source,
     category: categoryLine,
     rating: ratingMatch ? ratingMatch[1] : '',
-    reviews: reviewsMatch ? reviewsMatch[1] : '',
-    status: statusLine,
-    services: servicesLine
+    reviews: reviewsMatch ? reviewsMatch[1] : ''
   });
 
   return lead.name || lead.phone || lead.website ? lead : null;
@@ -302,7 +295,7 @@ function getGoogleMapsResultCards() {
   return cards;
 }
 
-function extractSelectedGoogleMapsPlace(source) {
+function extractSelectedGoogleMapsPlace() {
   const panel = document.querySelector('div[role="main"]') || document;
   const name = pickText(panel, ['h1.DUwDvf', 'h1.fontHeadlineLarge', 'h1']);
   const website =
@@ -325,7 +318,6 @@ function extractSelectedGoogleMapsPlace(source) {
     phone,
     website,
     address,
-    source,
     rating: ratingMatch ? ratingMatch[1] : '',
     reviews: reviewsMatch ? reviewsMatch[1] : ''
   });
@@ -802,18 +794,13 @@ function extractActionText(el) {
 function normalizeLead(lead) {
   return {
     name: lead.name?.trim() || '',
-    email: lead.email?.toLowerCase().trim() || '',
     phone: lead.phone?.trim() || '',
     company: lead.company?.trim() || '',
     category: lead.category?.trim() || '',
     rating: lead.rating?.trim() || '',
     reviews: lead.reviews?.trim() || '',
-    status: lead.status?.trim() || '',
-    services: lead.services?.trim() || '',
-    jobTitle: lead.jobTitle?.trim() || '',
     website: lead.website?.trim() || '',
-    address: lead.address?.trim() || '',
-    source: lead.source?.trim() || ''
+    address: lead.address?.trim() || ''
   };
 }
 

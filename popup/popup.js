@@ -311,9 +311,8 @@ class LeadExtractor {
 
     for (const rawLead of rawLeads) {
       const preparedLead = {
-        ...rawLead,
+        ...this.sanitizeLeadForStorage(rawLead),
         id: this.generateId(),
-        keywords: this.matchKeywords(rawLead),
         contacted: false,
         contactedAt: null,
         createdAt: Date.now(),
@@ -607,26 +606,7 @@ class LeadExtractor {
       return;
     }
 
-    const data = this.leads.map(lead => ({
-      Name: lead.name || '',
-      Email: lead.email || '',
-      Phone: lead.phone || '',
-      Company: lead.company || '',
-      Category: lead.category || '',
-      Rating: lead.rating || '',
-      Reviews: lead.reviews || '',
-      Status: lead.status || '',
-      Services: lead.services || '',
-      'Job Title': lead.jobTitle || '',
-      Website: lead.website || '',
-      Address: lead.address || '',
-      'Source URL': lead.source || '',
-      'Matched Keywords': lead.keywords?.join(', ') || '',
-      'Extracted Date': new Date(lead.createdAt).toISOString(),
-      'WhatsApp URL': this.buildWhatsAppUrl(lead),
-      'Contacted': lead.contacted ? 'Yes' : 'No',
-      'Contacted Date': lead.contactedAt ? new Date(lead.contactedAt).toISOString() : ''
-    }));
+    const data = this.leads.map((lead) => this.buildExportRow(lead));
 
     const csv = Papa.unparse(data);
     const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
@@ -640,26 +620,7 @@ class LeadExtractor {
       return;
     }
 
-    const data = this.leads.map(lead => ({
-      Name: lead.name || '',
-      Email: lead.email || '',
-      Phone: lead.phone || '',
-      Company: lead.company || '',
-      Category: lead.category || '',
-      Rating: lead.rating || '',
-      Reviews: lead.reviews || '',
-      Status: lead.status || '',
-      Services: lead.services || '',
-      'Job Title': lead.jobTitle || '',
-      Website: lead.website || '',
-      Address: lead.address || '',
-      'Source URL': lead.source || '',
-      'Matched Keywords': lead.keywords?.join(', ') || '',
-      'Extracted Date': new Date(lead.createdAt).toISOString(),
-      'WhatsApp URL': this.buildWhatsAppUrl(lead),
-      'Contacted': lead.contacted ? 'Yes' : 'No',
-      'Contacted Date': lead.contactedAt ? new Date(lead.contactedAt).toISOString() : ''
-    }));
+    const data = this.leads.map((lead) => this.buildExportRow(lead));
 
     const worksheet = XLSX.utils.json_to_sheet(data);
     const headers = Object.keys(data[0] || {});
@@ -685,6 +646,35 @@ class LeadExtractor {
   // Utility methods
   generateId() {
     return 'lead_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+  }
+
+  sanitizeLeadForStorage(rawLead = {}) {
+    return {
+      name: rawLead.name || '',
+      phone: rawLead.phone || '',
+      company: rawLead.company || '',
+      category: rawLead.category || '',
+      rating: rawLead.rating || '',
+      reviews: rawLead.reviews || '',
+      website: rawLead.website || '',
+      address: rawLead.address || ''
+    };
+  }
+
+  buildExportRow(lead) {
+    return {
+      Name: lead.name || '',
+      Phone: lead.phone || '',
+      Company: lead.company || '',
+      Category: lead.category || '',
+      Rating: lead.rating || '',
+      Reviews: lead.reviews || '',
+      Website: lead.website || '',
+      Address: lead.address || '',
+      'WhatsApp URL': this.buildWhatsAppUrl(lead),
+      Contacted: lead.contacted ? 'Yes' : 'No',
+      'Contacted Date': lead.contactedAt ? new Date(lead.contactedAt).toISOString() : ''
+    };
   }
 
   matchKeywords(lead) {
