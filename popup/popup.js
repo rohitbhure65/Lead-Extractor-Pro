@@ -121,45 +121,52 @@ class LeadExtractor {
         this.handleExtractionProgress(message);
       } else if (message?.action === 'leadsCleared') {
         this.handleLeadsCleared();
-      } else if (message?.action === 'saveLeadRequest') {
-        this.handleSaveLeadRequest(message.lead, sendResponse);
+      } else if (message?.action === 'saveLeadsRequest') {
+        this.handleSaveLeadsRequest(message.leads, sendResponse);
         return true;
       }
       return false;
     });
   }
 
-  async handleSaveLeadRequest(leadData, sendResponse) {
-    const customName = prompt('Enter custom name for this lead:', leadData.name || leadData.company || 'New Lead');
-    if (customName === null || customName.trim() === '') {
-      sendResponse({ saved: false, reason: 'cancelled' });
+  async handleSaveLeadsRequest(leadsData, sendResponse) {
+    if (!Array.isArray(leadsData) || leadsData.length === 0) {
+      sendResponse({ saved: false, reason: 'no_data' });
       return;
     }
 
-    const preparedLead = {
-      ...this.sanitizeLeadForStorage(leadData),
-      name: customName.trim(),
-      id: this.generateId(),
-      type: 'saved',
-      contacted: false,
-      contactedAt: null,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      source: leadData.source || document.title.slice(0, 100)
-    };
+    let savedCount = 0;
+    for (const leadData of leadsData) {
+      const preparedLead = {
+        ...this.sanitizeLeadForStorage(leadData),
+        id: this.generateId(),
+        type: 'saved',
+        contacted: false,
+        contactedAt: null,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        source: leadData.source || 'Manual Save'
+      };
 
-    // Check for duplicate
-    if (this.isDuplicateLead(preparedLead)) {
-      this.showToast('Lead already exists (duplicate)', 'warning');
-      sendResponse({ saved: false, reason: 'duplicate' });
-      return;
+      // Check for duplicate
+      if (!this.isDuplicateLead(preparedLead)) {
+        await Storage.addLead(preparedLead);
+        savedCount++;
+      }
     }
 
-    await Storage.addLead(preparedLead);
-    await this.loadLeads();
-    this.updateCounts();
-    this.showToast(`"${customName}" saved to dashboard!`, 'success');
-    sendResponse({ saved: true, leadId: preparedLead.id });
+    if (savedCount > 0) {
+      await this.loadLeads();
+      this.updateCounts();
+      this.setExtractionStatus(`Saved ${savedCount} leads...`);
+      this.handleTabClick('saved'); // Automatically switch to Saved tab to show new leads
+      this.showToast(`Saved ${savedCount} new leads to dashboard!`, 'success');
+      sendResponse({ saved: true, count: savedCount });
+    } else {
+      this.setExtractionStatus('All leads already exist in dashboard');
+      this.showToast('All leads already exist in dashboard', 'info');
+      sendResponse({ saved: false, reason: 'all_duplicates' });
+    }
   }
 
   renderExtractionSettings() {
@@ -226,7 +233,7 @@ class LeadExtractor {
 
       this.showToast('Requesting lead data from page...', 'info');
       const response = await chrome.tabs.sendMessage(tabs[0].id, { action: 'saveLeadRequest' });
-      if (response.saved) {
+      if (response && (response.saved || response.count > 0)) {
         this.showToast('Lead saved successfully!', 'success');
       }
     } catch (error) {

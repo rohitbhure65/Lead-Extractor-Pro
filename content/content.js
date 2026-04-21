@@ -19,6 +19,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.action === 'stopExtraction') {
+    if (!message.sessionId || message.sessionId === extractionState.sessionId) {
+      extractionState.stopRequested = true;
+    }
+
+    sendResponse({ stopped: true });
+    return false;
+  }
+
   if (message.action === 'autoSendWhatsApp') {
     autoSendWhatsAppMessage()
       .then(() => sendResponse({ sent: true }))
@@ -28,13 +37,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === 'saveLeadRequest') {
-    const lead = extractCurrentPageLead();
-    if (lead) {
+    const leads = extractAllCurrentPageLeads();
+    if (leads.length > 0) {
       chrome.runtime.sendMessage({
-        action: 'saveLeadRequest',
-        lead: lead
+        action: 'saveLeadsRequest',
+        leads: leads
       });
-      sendResponse({ ready: true });
+      sendResponse({ count: leads.length });
     } else {
       sendResponse({ error: 'No lead data found on page' });
     }
@@ -43,24 +52,51 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return false;
 });
 
-function extractCurrentPageLead() {
-  // Try Google Maps selected place first
+function extractAllCurrentPageLeads() {
+  const allLeads = [];
+  const source = document.title.slice(0, 100);
+
+  // 1. Google Maps specific extraction
   if (isGoogleMapsPage()) {
+    // Try list results first
+    const cards = getGoogleMapsResultCards();
+    if (cards.length > 0) {
+      console.log(`[SAVE CURRENT] Found ${cards.length} cards on Maps search`);
+      const listLeads = cards.map(card => extractGoogleMapsCardLead(card)).filter(Boolean);
+      listLeads.forEach(l => l.source = `Google Maps List - ${source}`);
+      allLeads.push(...listLeads);
+    }
+    
+    // Also try the selected place if any (might be different or redundant)
     const placeLead = extractSelectedGoogleMapsPlace();
     if (placeLead && placeLead.name) {
-      placeLead.source = 'Google Maps - Selected Place';
-      return placeLead;
+      placeLead.source = `Google Maps Place - ${source}`;
+      // Deduplicate against list results by name/phone
+      const exists = allLeads.some(l => 
+        (l.name === placeLead.name) || 
+        (l.phone && l.phone === placeLead.phone)
+      );
+      if (!exists) {
+        allLeads.push(placeLead);
+      }
     }
   }
 
-  // Standard page extraction (top lead)
-  const leads = extractStandardLeads([], {});
-  if (leads.length > 0) {
-    leads[0].source = document.title.slice(0, 100);
-    return leads[0];
+  // 2. Standard page extraction (if no leads found or not Google Maps)
+  if (allLeads.length === 0) {
+    const standardLeads = extractStandardLeads([], {});
+    standardLeads.forEach(l => l.source = source);
+    allLeads.push(...standardLeads);
   }
 
-  return null;
+  // Deduplicate by name + phone within this snapshot
+  const seen = new Set();
+  return allLeads.filter(lead => {
+    const key = `${lead.name}|${lead.phone}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 async function autoSendWhatsAppMessage() {
@@ -223,7 +259,7 @@ async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }
   let previousLeadCount = 0;
   let previousLastCardKey = '';
 
-  while (true) {
+  while (!extractionState.stopRequested) {
     scrollContainer = findGoogleMapsScrollContainer() || scrollContainer;
 
     // Load more results if available
@@ -305,7 +341,7 @@ async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }
     await wait(1500);
   }
 
-  const stopped = false;
+  const stopped = extractionState.stopRequested;
 
   // IMPROVED: Better final message
   let finalStatus = stopped ? `Stopped.` : `Completed.`;
@@ -350,7 +386,7 @@ async function enhancedAutoScroll(container, options = {}) {
   log('Starting enhanced auto-scroll');
   log(`Initial card count: ${getGoogleMapsResultCards().length}`);
 
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+  for (let attempt = 0; attempt < maxAttempts && !extractionState.stopRequested; attempt++) {
     const beforeCards = getGoogleMapsResultCards().length;
     const beforeScrollHeight = container.scrollHeight;
 
