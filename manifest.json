@@ -2,17 +2,17 @@
   "manifest_version": 3,
   "name": "Lead Extractor Pro",
   "version": "1.0.0",
-  "description": "Extract, manage, and export leads from any website with keyword-based filtering",
+  "description": "Extract, manage, and export leads from any website",
   "permissions": [
     "activeTab",
     "storage",
-    "tabs"
+    "tabs",
+    "windows"
   ],
   "host_permissions": [
     "<all_urls>"
   ],
   "action": {
-    "default_popup": "popup/popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",

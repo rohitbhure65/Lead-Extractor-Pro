@@ -1,37 +1,34 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Lead Extractor Pro</title>
   <link rel="stylesheet" href="popup.css">
 </head>
+
 <body>
   <div class="container">
     <!-- Header -->
     <header class="header">
       <div class="header-left">
-        <span class="logo">🔷</span>
-        <h1>Lead Extractor Pro</h1>
+        <!-- <span class="logo">&heart</span> -->
+        <div class="title-group">
+          <div class="title-copy">
+            <div class="title-line">
+              <h1>Lead Extractor Pro</h1>
+              <span class="version-badge" id="versionBadge">v1.0.0</span>
+            </div>
+            <div class="header-credit">
+              <span>Created by Rohit Bhure</span>
+              <a href="https://github.com/rohitbhure65" target="_blank" rel="noopener noreferrer">GitHub</a>
+            </div>
+          </div>
+        </div>
       </div>
-      <button class="settings-btn" id="settingsBtn" title="Settings">⚙</button>
+      <button class="close-window-btn" id="closeWindowBtn" title="Close">&times;</button>
     </header>
-
-    <!-- Keyword Panel -->
-    <section class="keyword-panel">
-      <div class="panel-header">
-        <h2>Keywords (10-15)</h2>
-        <span class="keyword-count" id="keywordCount">0/15</span>
-      </div>
-      <div class="keyword-input-group">
-        <input type="text" id="keywordInput" placeholder="Enter keyword..." maxlength="30">
-        <button class="btn-add" id="addKeyword" title="Add keyword">+</button>
-      </div>
-      <div class="keywords-list" id="keywordsList"></div>
-      <div class="keyword-actions">
-        <button class="btn-text" id="clearKeywords">Clear All</button>
-      </div>
-    </section>
 
     <!-- Extraction Controls -->
     <section class="extraction-controls">
@@ -40,10 +37,21 @@
           <label for="maxLeadsInput">Max results</label>
           <input type="number" id="maxLeadsInput" min="1" max="5000" value="100">
         </div>
+        <div class="setting-group">
+          <label for="countryCodeInput">Country code</label>
+          <div class="country-code-field">
+            <span class="country-code-prefix">+</span>
+            <input type="text" id="countryCodeInput" value="91" inputmode="numeric" maxlength="4" placeholder="91"
+              aria-label="Country code digits">
+          </div>
+        </div>
         <div class="setting-toggles">
-          <label class="checkbox-row">
-            <input type="checkbox" id="noLimitInput">
+          <label class="toggle-row">
             <span>No limit</span>
+            <div class="toggle-switch">
+              <input type="checkbox" id="noLimitInput">
+              <span class="toggle-slider"></span>
+            </div>
           </label>
           <label class="toggle-row">
             <span>Phone only</span>
@@ -91,6 +99,7 @@
           <option value="email">Has Email</option>
           <option value="phone">Has Phone</option>
           <option value="company">Has Company</option>
+          <option value="rating">Has Rating</option>
         </select>
       </div>
       <div class="leads-list" id="leadsList">
@@ -111,6 +120,11 @@
         <span class="btn-icon">🗑</span> Clear All
       </button>
     </section>
+
+    <footer class="footer-credit">
+      <span>Created by Rohit Bhure</span>
+      <a href="https://github.com/rohitbhure65" target="_blank" rel="noopener noreferrer">GitHub Profile</a>
+    </footer>
 
     <!-- Add Lead Modal -->
     <div class="modal" id="addLeadModal" style="display: none;">
@@ -206,4 +220,5 @@
   <script src="../utils/deduplicator.js"></script>
   <script src="popup.js"></script>
 </body>
+
 </html>
