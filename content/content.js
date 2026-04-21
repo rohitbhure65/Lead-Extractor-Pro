@@ -149,8 +149,19 @@ async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }
   let previousLeadCount = 0;
   let previousLastCardKey = '';
 
+  // Initial full auto-scroll to load ALL data (task's main fix)
+  console.log('[EXTRACT] Starting full auto-scroll...');
+  await autoScrollToEnd(scrollContainer);
+
+  let noProgressCount = 0;
+
   while (!extractionState.stopRequested) {
     scrollContainer = findGoogleMapsScrollContainer() || scrollContainer;
+
+    const loadState = await loadMoreGoogleMapsResults(scrollContainer, {
+      previousCardCount: getGoogleMapsResultCards().length
+    });
+
     const batch = extractGoogleMapsVisibleLeads({ keywords, seen, maxLeads, options });
     const visibleCards = getGoogleMapsResultCards();
     const lastCardKey = buildCardSnapshotKey(visibleCards[visibleCards.length - 1]);
@@ -178,14 +189,9 @@ async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }
       break;
     }
 
-    if (hasReachedGoogleMapsResultsEnd(scrollContainer)) {
+    if (loadState.reachedEnd) {
       break;
     }
-
-    const loadState = await loadMoreGoogleMapsResults(scrollContainer, {
-      previousCardCount: visibleCards.length,
-      previousLastCardKey: lastCardKey
-    });
 
     scrollContainer = findGoogleMapsScrollContainer() || scrollContainer;
     const noNewLeads = bufferedLeads.length === previousLeadCount;
@@ -323,9 +329,9 @@ function extractGoogleMapsCardLead(card) {
 
 function getGoogleMapsResultCards() {
   const selectorList = [
-    '[role="feed"] [role="article"]',
-    '.Nv2PK',
+    '.Nv2PK', // Prioritize task's bonus selector
     '.Nv2PK.THOPZb',
+    '[role="feed"] [role="article"]',
     '.THOPZb',
     'a.hfpxzc',
     'div[aria-label] > a[href*="/maps/place/"]'
@@ -382,77 +388,97 @@ function extractSelectedGoogleMapsPlace() {
 }
 
 function findGoogleMapsScrollContainer() {
+  // Primary from HTML: .m6QErb DxyBCb kA9KIf dS8AEf XiKgde ecceSd QjC7t[role="feed"]
+  let container = document.querySelector('.m6QErb.DxyBCb.kA9KIf.dS8AEf.XiKgde.ecceSd.QjC7t[role="feed"]') ||
+    document.querySelector('div.m6QErb.WNBkOb.XiKgde[role="main"]') ||
+    document.querySelector('.m6QErb[role="main"]');
+  if (container && isScrollableContainer(container)) {
+    console.log('[SCROLL] Found primary container:', container);
+    return container;
+  }
+
+  // Fallback heuristic
   const cards = getGoogleMapsResultCards();
-  const candidates = new Set(document.querySelectorAll('div[role="feed"], div[aria-label][tabindex="-1"], div.m6QErb[aria-label]'));
+  const candidates = new Set(document.querySelectorAll('div[role="feed"], div[aria-label][tabindex="-1"], .m6QErb, div.DxyBCb[role="feed"]'));
 
   cards.slice(0, 5).forEach((card) => {
     let node = card?.parentElement;
     let depth = 0;
-
-    while (node && depth < 6) {
+    while (node && depth < 8) {
       if (isScrollableContainer(node)) {
         candidates.add(node);
       }
-
       node = node.parentElement;
       depth += 1;
     }
   });
 
-  return Array.from(candidates)
+  container = Array.from(candidates)
     .filter((el) => isScrollableContainer(el))
-    .filter((el) => containsResultCards(el) || isLikelyLeftSidebar(el))
-    .sort((a, b) => scoreScrollContainer(b) - scoreScrollContainer(a))[0] || null;
+    .filter((el) => el.querySelector('.Nv2PK, [role="article"]'))
+    .sort((a, b) => scoreScrollContainer(b) - scoreScrollContainer(a))[0];
+
+  console.log('[SCROLL] Selected container:', container, 'Height:', container?.scrollHeight, 'Scrollable:', !!container);
+  return container || null;
 }
 
+// Deprecated: scrollGoogleMapsResults - replaced by enhanced loadMoreGoogleMapsResults
 function scrollGoogleMapsResults(container) {
   const increment = Math.max(container.clientHeight * 0.85, 600);
   container.scrollBy({ top: increment, behavior: 'auto' });
 }
 
+async function autoScrollToEnd(container, maxAttempts = 40) {
+  console.log('[AUTO-SCROLL START] Container height:', container.scrollHeight, 'clientHeight:', container.clientHeight);
+
+  let previousHeight = container.scrollHeight;
+  let stableAttempts = 0;
+  const delay = 4000; // 4s for slow Maps
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const beforeHeight = container.scrollHeight;
+    const beforeCards = getGoogleMapsResultCards().length;
+
+    // Scroll to bottom + extra
+    container.scrollTop = container.scrollHeight;
+    container.dispatchEvent(new MouseEvent('scroll', { bubbles: true }));
+    window.dispatchEvent(new Event('scroll'));
+
+    await wait(delay);
+
+    const afterHeight = container.scrollHeight;
+    const afterCards = getGoogleMapsResultCards().length;
+
+    console.log(`[SCROLL ${attempt + 1}/${maxAttempts}] H:${beforeHeight}→${afterHeight} Δ+${afterHeight - beforeHeight} C:${beforeCards}→${afterCards}`);
+
+    if (afterHeight === previousHeight && afterCards === beforeCards) {
+      stableAttempts++;
+      console.log(`[STABLE ${stableAttempts}/3] No change`);
+      if (stableAttempts >= 3) break;
+    } else {
+      stableAttempts = 0;
+    }
+
+    previousHeight = afterHeight;
+  }
+
+  console.log('[AUTO-SCROLL END] Final:', getGoogleMapsResultCards().length, 'cards');
+}
+
 async function loadMoreGoogleMapsResults(container, previousState = {}) {
-  if (!container) {
-    return { hasNewCards: false, reachedEnd: true };
-  }
+  if (!container) return { hasNewCards: false, reachedEnd: true };
 
-  const beforeTop = container.scrollTop || 0;
-  const beforeHeight = container.scrollHeight || 0;
-  const cards = getGoogleMapsResultCards();
-  const lastCard = cards[cards.length - 1] || null;
+  // Lightweight check now that initial scroll is done
+  const beforeCards = getGoogleMapsResultCards().length;
+  container.scrollTo(0, container.scrollHeight);
+  await wait(2000);
+  const afterCards = getGoogleMapsResultCards().length;
 
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const targetTop = Math.max(container.scrollHeight, beforeTop + container.clientHeight);
-    container.scrollTo({ top: targetTop, behavior: 'auto' });
-    scrollGoogleMapsResults(container);
+  const hasNew = afterCards > beforeCards;
+  const reachedEnd = hasReachedGoogleMapsResultsEnd(container);
 
-    if (lastCard) {
-      const cardTop = lastCard.offsetTop || 0;
-      const cardHeight = lastCard.offsetHeight || 0;
-      const lastCardTarget = Math.max(cardTop - container.clientHeight + cardHeight + 160, container.scrollTop);
-      container.scrollTo({ top: lastCardTarget, behavior: 'auto' });
-    }
-
-    container.dispatchEvent(new Event('scroll', { bubbles: true }));
-
-    const changed = await waitForGoogleMapsResultsChange(container, previousState);
-    if (changed.hasNewCards || changed.reachedEnd) {
-      return changed;
-    }
-  }
-
-  const afterCards = getGoogleMapsResultCards();
-  const afterLastCardKey = buildCardSnapshotKey(afterCards[afterCards.length - 1]);
-  const afterTop = container.scrollTop || 0;
-  const afterHeight = container.scrollHeight || 0;
-
-  return {
-    hasNewCards:
-      afterCards.length > (previousState.previousCardCount || 0) ||
-      (afterLastCardKey && afterLastCardKey !== previousState.previousLastCardKey) ||
-      afterHeight > beforeHeight ||
-      afterTop > beforeTop,
-    reachedEnd: hasReachedGoogleMapsResultsEnd(container)
-  };
+  console.log('[LOAD-MORE] Cards:', beforeCards, '→', afterCards, 'End:', reachedEnd);
+  return { hasNewCards: hasNew, reachedEnd };
 }
 
 function isScrollableContainer(el) {
@@ -484,8 +510,8 @@ function buildCardSnapshotKey(card) {
 }
 
 async function waitForGoogleMapsResultsChange(container, previousState = {}) {
-  const timeoutMs = 2200;
-  const pollMs = 200;
+  const timeoutMs = 3500; // Increased for slower loads
+  const pollMs = 250;
   const start = Date.now();
 
   while (Date.now() - start < timeoutMs) {
