@@ -1,12 +1,6 @@
 // Lead Extractor Pro - Background Service Worker
 // Handles extraction tasks and communication
 
-let popupWindowId = null;
-
-chrome.action.onClicked.addListener(async () => {
-  await openPersistentPopupWindow();
-});
-
 // Listen for messages from popup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'extractFromUrl') {
@@ -18,7 +12,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ error: error.message || 'Failed to open WhatsApp' }));
   }
-  
+
   return true;
 });
 
@@ -27,16 +21,23 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     return;
   }
 
+  // FIXED: Don't clear leads on Google Maps pages or refreshes - persist across navigation
+  if (tab.url.includes('/maps')) {
+    console.log('[PERSISTENCE] Skipping lead clear on Maps page:', tab.url);
+    return;
+  }
+
+  // Clear only on non-Maps page navigation (user intent to start fresh)
   clearLeadDatabase()
-    .then(() => chrome.runtime.sendMessage({ action: 'leadsCleared', reason: 'page-refresh', tabId }).catch(() => {}))
-    .catch((error) => console.error('Failed to clear leads on refresh:', error));
+    .then(() => chrome.runtime.sendMessage({ action: 'leadsCleared', reason: 'page-change', tabId }).catch(() => { }))
+    .catch((error) => console.error('Failed to clear leads on page change:', error));
 });
 
 // Extract leads from a specific URL
 async function extractFromUrl(url, keywords = []) {
   try {
     const tab = await chrome.tabs.create({ url, active: false });
-    
+
     // Wait for page to load
     await new Promise(resolve => {
       chrome.tabs.onUpdated.addListener(function listener(tabId, info) {
@@ -46,17 +47,17 @@ async function extractFromUrl(url, keywords = []) {
         }
       });
     });
-    
+
     // Send extraction message to content script
     const response = await chrome.tabs.sendMessage(tab.id, {
       action: 'extract',
       keywords,
       source: url
     });
-    
+
     // Close the tab
     await chrome.tabs.remove(tab.id);
-    
+
     return response?.leads || [];
   } catch (error) {
     console.error('URL extraction error:', error);
@@ -104,35 +105,6 @@ function clearLeadDatabase() {
   });
 }
 
-async function openPersistentPopupWindow() {
-  const popupUrl = chrome.runtime.getURL('popup/popup.html');
-
-  if (popupWindowId !== null) {
-    try {
-      await chrome.windows.update(popupWindowId, { focused: true });
-      return;
-    } catch (error) {
-      popupWindowId = null;
-    }
-  }
-
-  const createdWindow = await chrome.windows.create({
-    url: popupUrl,
-    type: 'popup',
-    focused: true,
-    width: 820,
-    height: 720
-  });
-
-  popupWindowId = createdWindow.id ?? null;
-}
-
-chrome.windows.onRemoved.addListener((windowId) => {
-  if (windowId === popupWindowId) {
-    popupWindowId = null;
-  }
-});
-
 async function openWhatsAppAndSend(url) {
   if (!url) {
     throw new Error('WhatsApp URL is missing');
@@ -158,3 +130,4 @@ function waitForTabComplete(tabId) {
     });
   });
 }
+

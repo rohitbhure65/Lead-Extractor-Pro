@@ -35,8 +35,8 @@ class LeadExtractor {
     const saved = await Storage.get('extractionSettings');
     this.extractionSettings = {
       limit: saved?.limit || 100,
-      noLimit: Boolean(saved?.noLimit),
-      requirePhone: Boolean(saved?.requirePhone),
+      noLimit: Boolean(saved?.noLimit) || true,
+      requirePhone: Boolean(saved?.requirePhone) || true, // Default ON as requested
       countryCode: this.normalizeCountryCode(saved?.countryCode || LeadExtractor.DEFAULT_COUNTRY_CODE),
       whatsAppMessage: saved?.whatsAppMessage?.trim() || LeadExtractor.DEFAULT_WHATSAPP_MESSAGE
     };
@@ -117,6 +117,12 @@ class LeadExtractor {
     document.getElementById('maxLeadsInput').value = this.extractionSettings.limit;
     document.getElementById('noLimitInput').checked = this.extractionSettings.noLimit;
     document.getElementById('requirePhoneInput').checked = this.extractionSettings.requirePhone;
+    // ADDED: Note about requirePhone for Maps
+    const phoneNote = document.getElementById('phoneNote');
+    if (phoneNote) {
+      phoneNote.textContent = 'Note: Disabling "Require Phone" recommended for Google Maps (few listings show phones)';
+      phoneNote.style.display = 'block';
+    }
     document.getElementById('countryCodeInput').value = this.getCountryCodeDigits(this.extractionSettings.countryCode);
     document.getElementById('whatsAppMessageInput').value = this.extractionSettings.whatsAppMessage;
     document.getElementById('maxLeadsInput').disabled = this.extractionSettings.noLimit;
@@ -213,17 +219,25 @@ class LeadExtractor {
       const finalCount = response?.savedCount ?? this.currentSessionSaved;
       if (finalCount > 0) {
         const statusText = response?.stopped
-          ? `Stopped after saving ${finalCount} leads`
-          : `Extraction completed with ${finalCount} leads`;
+          ? `Stopped after saving ${finalCount} business leads`
+          : `Extraction completed with ${finalCount} business leads`;
         this.setExtractionStatus(statusText);
         if (response?.stopped && this.autoExportOnStop) {
           this.exportCSV();
           this.autoExportOnStop = false;
         }
-        this.showToast(`Extracted ${finalCount} leads`, 'success');
+        this.showToast(`Extracted ${finalCount} business leads`, 'success');
       } else {
-        this.setExtractionStatus('No leads found on this page');
-        this.showToast('No leads found on this page', 'error');
+        // FIXED: Better 0-leads guidance for Maps
+        const tips = [
+          '✓ Make sure Google Maps results are visible',
+          '✓ Check Developer Console (F12) for [EXTRACT] logs',
+          '✓ Uncheck "Phone only" filter (most listings show no phone)',
+          '✓ Scroll down to load more results before extracting',
+          '✓ Try a broader search term on Google Maps'
+        ].join('\\n');
+        this.setExtractionStatus(`No business listings found. Tips:\\n${tips}`);
+        this.showToast('No listings extracted. See Console (F12) → [EXTRACT] logs', 'warning');
       }
     } catch (error) {
       console.error('Extraction error:', error);
