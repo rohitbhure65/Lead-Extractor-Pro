@@ -139,28 +139,34 @@ async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }
   const maxLeads = options.noLimit ? null : parsePositiveInt(options.maxLeads);
   const seen = new Set();
   const bufferedLeads = [];
+
+  // Wait for page to be fully loaded
+  await waitForGoogleMapsReady();
+
   let scrollContainer = findGoogleMapsScrollContainer();
 
   if (!scrollContainer) {
     throw new Error('Google Maps results panel not found');
   }
 
+  console.log('[EXTRACT] Starting full auto-scroll to load all data...');
+
+  // Enhanced auto-scroll with proper detection
+  await enhancedAutoScroll(scrollContainer, {
+    maxAttempts: 50,
+    scrollDelay: 2500,
+    debug: true
+  });
+
   let stagnantRounds = 0;
   let previousLeadCount = 0;
   let previousLastCardKey = '';
 
-  // Initial full auto-scroll to load ALL data (task's main fix)
-  console.log('[EXTRACT] Starting full auto-scroll...');
-  await autoScrollToEnd(scrollContainer);
-
-  let noProgressCount = 0;
-
   while (!extractionState.stopRequested) {
     scrollContainer = findGoogleMapsScrollContainer() || scrollContainer;
 
-    const loadState = await loadMoreGoogleMapsResults(scrollContainer, {
-      previousCardCount: getGoogleMapsResultCards().length
-    });
+    // Load more results if available
+    await loadMoreGoogleMapsResults(scrollContainer);
 
     const batch = extractGoogleMapsVisibleLeads({ keywords, seen, maxLeads, options });
     const visibleCards = getGoogleMapsResultCards();
@@ -189,17 +195,11 @@ async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }
       break;
     }
 
-    if (loadState.reachedEnd) {
-      break;
-    }
-
-    scrollContainer = findGoogleMapsScrollContainer() || scrollContainer;
     const noNewLeads = bufferedLeads.length === previousLeadCount;
     const sameLastCard = Boolean(lastCardKey) && lastCardKey === previousLastCardKey;
-    const noNewCards = !loadState.hasNewCards;
-    const reachedEnd = loadState.reachedEnd || hasReachedGoogleMapsResultsEnd(scrollContainer);
+    const reachedEnd = hasReachedGoogleMapsResultsEnd(scrollContainer);
 
-    if (noNewLeads && sameLastCard && noNewCards && reachedEnd) {
+    if (noNewLeads && sameLastCard && reachedEnd) {
       stagnantRounds += 1;
     } else {
       stagnantRounds = 0;
@@ -208,9 +208,12 @@ async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }
     previousLeadCount = bufferedLeads.length;
     previousLastCardKey = lastCardKey;
 
-    if (stagnantRounds >= 5) {
+    if (stagnantRounds >= 3) {
+      console.log('[EXTRACT] No new leads found, stopping extraction');
       break;
     }
+
+    await wait(1500);
   }
 
   const stopped = extractionState.stopRequested;
@@ -226,66 +229,160 @@ async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }
   });
 
   return {
-    leads: [],
+    leads: bufferedLeads,
     savedCount: bufferedLeads.length,
     stopped
   };
 }
 
-function extractGoogleMapsVisibleLeads({ keywords, seen, maxLeads, options = {} }) {
-  const cards = getGoogleMapsResultCards();
+// NEW: Enhanced auto-scroll function with proper detection
+async function enhancedAutoScroll(container, options = {}) {
+  const {
+    maxAttempts = 50,
+    scrollDelay = 2500,
+    debug = true
+  } = options;
 
-  const results = [];
+  let previousCardCount = 0;
+  let previousScrollHeight = 0;
+  let noChangeCount = 0;
+  let consecutiveNoCards = 0;
 
-  for (const card of cards) {
-    if (maxLeads && seen.size >= maxLeads) {
+  const log = debug ? (...args) => console.log('[AUTO-SCROLL]', ...args) : () => {};
+
+  log('Starting enhanced auto-scroll');
+  log(`Initial card count: ${getGoogleMapsResultCards().length}`);
+
+  for (let attempt = 0; attempt < maxAttempts && !extractionState.stopRequested; attempt++) {
+    const beforeCards = getGoogleMapsResultCards().length;
+    const beforeScrollHeight = container.scrollHeight;
+
+    log(`Attempt ${attempt + 1}/${maxAttempts} - Cards: ${beforeCards}, ScrollHeight: ${beforeScrollHeight}`);
+
+    // Scroll to bottom
+    container.scrollTo({
+      top: container.scrollHeight,
+      behavior: 'smooth'
+    });
+
+    // Trigger scroll events
+    container.dispatchEvent(new Event('scroll', { bubbles: true }));
+    window.dispatchEvent(new Event('scroll'));
+
+    await wait(scrollDelay);
+
+    const afterCards = getGoogleMapsResultCards().length;
+    const afterScrollHeight = container.scrollHeight;
+
+    log(`After scroll - Cards: ${afterCards}, ScrollHeight: ${afterScrollHeight}`);
+
+    // Check for end of results
+    if (hasReachedGoogleMapsResultsEnd(container)) {
+      log('Reached end of results');
       break;
     }
 
-    const lead = extractGoogleMapsCardLead(card);
-    if (!lead) {
-      continue;
-    }
+    // Check if we're stuck
+    if (afterCards === beforeCards) {
+      noChangeCount++;
+      log(`No new cards loaded (${noChangeCount}/5)`);
 
-    if (!matchesLeadRequirements(lead, options)) {
-      continue;
-    }
+      if (noChangeCount >= 5) {
+        // Try scrolling with different behavior
+        log('Attempting aggressive scroll');
+        container.scrollTop = container.scrollHeight;
+        await wait(1000);
 
-    if (keywords.length > 0 && !matchesKeywords(lead, keywords)) {
-      continue;
-    }
+        // Try clicking "More results" button if exists
+        const moreButton = findMoreResultsButton();
+        if (moreButton) {
+          log('Found "More results" button, clicking');
+          moreButton.click();
+          await wait(2000);
+        }
 
-    const key = buildLeadKey(lead);
-    if (!key || seen.has(key)) {
-      continue;
-    }
+        if (getGoogleMapsResultCards().length === afterCards) {
+          log('Still no new cards, stopping scroll');
+          break;
+        }
 
-    seen.add(key);
-    results.push(lead);
-  }
-
-  const selectedPlace = extractSelectedGoogleMapsPlace();
-  if (selectedPlace && (!maxLeads || seen.size < maxLeads)) {
-    if (matchesLeadRequirements(selectedPlace, options) && (!keywords.length || matchesKeywords(selectedPlace, keywords))) {
-      const selectedKey = buildLeadKey(selectedPlace);
-      if (selectedKey && !seen.has(selectedKey)) {
-        seen.add(selectedKey);
-        results.unshift(selectedPlace);
+        noChangeCount = 0;
       }
+    } else {
+      noChangeCount = 0;
+      log(`Loaded ${afterCards - beforeCards} new cards!`);
+    }
+
+    // Check for empty results
+    if (afterCards === 0) {
+      consecutiveNoCards++;
+      if (consecutiveNoCards >= 3) {
+        log('No cards found after multiple attempts');
+        break;
+      }
+    } else {
+      consecutiveNoCards = 0;
+    }
+
+    previousCardCount = afterCards;
+    previousScrollHeight = afterScrollHeight;
+
+    // Small delay between attempts
+    await wait(500);
+  }
+
+  log(`Auto-scroll complete. Final card count: ${getGoogleMapsResultCards().length}`);
+}
+
+// NEW: Find "More results" button
+function findMoreResultsButton() {
+  const selectors = [
+    'button[aria-label="More results"]',
+    'button:contains("More results")',
+    'div[role="button"]:contains("More results")',
+    'button[jsaction*="moreResults"]'
+  ];
+
+  for (const selector of selectors) {
+    const button = document.querySelector(selector);
+    if (button && button.offsetParent !== null) {
+      return button;
     }
   }
 
-  return results;
-}
-
-function matchesLeadRequirements(lead, options = {}) {
-  if (options.requirePhone && !lead.phone) {
-    return false;
+  // Find by text content
+  const buttons = document.querySelectorAll('button, div[role="button"]');
+  for (const button of buttons) {
+    if (button.textContent.toLowerCase().includes('more results')) {
+      return button;
+    }
   }
 
-  return true;
+  return null;
 }
 
+// NEW: Wait for Google Maps to be ready
+async function waitForGoogleMapsReady() {
+  const maxAttempts = 30;
+  const delay = 500;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const container = document.querySelector('.m6QErb.DxyBCb.kA9KIf.dS8AEf.XiKgde.ecceSd.QjC7t[role="feed"]');
+    const cards = getGoogleMapsResultCards();
+
+    if (container && cards.length > 0) {
+      console.log('[MAPS READY] Container found with', cards.length, 'cards');
+      return true;
+    }
+
+    await wait(delay);
+  }
+
+  console.warn('[MAPS READY] Timeout waiting for Maps to be ready');
+  return false;
+}
+
+// ENHANCED: Extract more data from Google Maps card
 function extractGoogleMapsCardLead(card) {
   const rawText = card.innerText || '';
   const text = normalizeWhitespace(rawText);
@@ -297,14 +394,33 @@ function extractGoogleMapsCardLead(card) {
     .split('\n')
     .map((line) => normalizeWhitespace(line))
     .filter((line) => line && !/^(photos|reviews|directions|save|nearby|send to your phone)$/i.test(line));
-  const name = pickText(card, ['.qBF1Pd', '.fontHeadlineSmall', '.fontBodyMedium > div:first-child']) || lines[0] || '';
 
+  // Extract name with better selectors
+  const name = pickText(card, [
+    '.qBF1Pd',
+    '.fontHeadlineSmall',
+    '.fontBodyMedium > div:first-child',
+    '[role="heading"]',
+    '.lMbq3e',
+    'div[role="article"] div:first-child'
+  ]) || lines[0] || '';
+
+  // Extract rating and review count
   const ratingMatch = text.match(/(\d\.\d)\s*★?/);
   const reviewsMatch = text.match(/\(([\d,]+)\)/);
+
+  // Extract phone with better regex
   const phoneMatch = text.match(/(?:\+?\d[\d\s().-]{7,}\d)/);
+
+  // Extract website
   const website = card.querySelector('a[href^="http"]:not([href*="google.com"])')?.href || '';
 
-  const addressLine = lines.find((line) => /road|rd\b|street|st\b|floor|scheme|park|nagar|indore|near|colony|sector|tower|hotel|marg|block|avenue|area/i.test(line)) || '';
+  // Extract address with better detection
+  const addressLine = lines.find((line) =>
+    /road|rd\b|street|st\b|floor|scheme|park|nagar|indore|near|colony|sector|tower|hotel|marg|block|avenue|area|drive|lane|boulevard|plaza|square|court|way|circle/i.test(line)
+  ) || '';
+
+  // Extract category/business type
   const categoryLine = lines.find((line) =>
     line !== name &&
     !line.includes('★') &&
@@ -312,6 +428,23 @@ function extractGoogleMapsCardLead(card) {
     !/open|closed/i.test(line) &&
     !/(reserve a table|order online|website|directions|call)/i.test(line)
   ) || '';
+
+  // Extract hours/status
+  const statusMatch = text.match(/(Open|Closed|Opens at|Closes at)\s*(?:⋅)?\s*([^★\n]+)/i);
+  const status = statusMatch ? statusMatch[0].trim() : '';
+
+  // Extract price range (if available)
+  const priceMatch = text.match(/[$]{1,4}/);
+  const priceRange = priceMatch ? priceMatch[0] : '';
+
+  // Extract additional info like "In-store pickup", "Delivery", etc.
+  const services = [];
+  const serviceKeywords = ['delivery', 'pickup', 'dine-in', 'takeout', 'reservation', 'curbside'];
+  serviceKeywords.forEach(service => {
+    if (text.toLowerCase().includes(service)) {
+      services.push(service);
+    }
+  });
 
   const lead = normalizeLead({
     name,
@@ -321,20 +454,27 @@ function extractGoogleMapsCardLead(card) {
     address: addressLine,
     category: categoryLine,
     rating: ratingMatch ? ratingMatch[1] : '',
-    reviews: reviewsMatch ? reviewsMatch[1] : ''
+    reviews: reviewsMatch ? reviewsMatch[1].replace(/,/g, '') : '',
+    status,
+    priceRange,
+    services: services.join(', '),
+    rawData: text.substring(0, 500) // Store raw data for debugging
   });
 
   return lead.name || lead.phone || lead.website ? lead : null;
 }
 
+// ENHANCED: Get all result cards with better selection
 function getGoogleMapsResultCards() {
   const selectorList = [
-    '.Nv2PK', // Prioritize task's bonus selector
+    '.Nv2PK', // Primary selector
     '.Nv2PK.THOPZb',
     '[role="feed"] [role="article"]',
     '.THOPZb',
     'a.hfpxzc',
-    'div[aria-label] > a[href*="/maps/place/"]'
+    'div[aria-label] > a[href*="/maps/place/"]',
+    '[role="feed"] > div > div > div',
+    '.m6QErb [role="article"]'
   ];
 
   const cards = [];
@@ -342,7 +482,7 @@ function getGoogleMapsResultCards() {
 
   selectorList.forEach((selector) => {
     document.querySelectorAll(selector).forEach((node) => {
-      const card = node.closest('[role="article"], .Nv2PK, .THOPZb') || node;
+      const card = node.closest('[role="article"], .Nv2PK, .THOPZb, [role="feed"] > div > div') || node;
       const text = normalizeWhitespace(card.innerText || '');
       if (!text) {
         return;
@@ -356,7 +496,49 @@ function getGoogleMapsResultCards() {
     });
   });
 
-  return cards;
+  // Remove duplicates and sort by position
+  return [...new Map(cards.map(card => [card, card])).values()];
+}
+
+// ENHANCED: Check if reached end of results
+function hasReachedGoogleMapsResultsEnd(container) {
+  if (!container) {
+    return true;
+  }
+
+  const text = normalizeWhitespace(container.innerText || '').toLowerCase();
+  const endMarkers = [
+    "you've reached the end of the list",
+    'you reached the end of the list',
+    'end of results',
+    'no more results',
+    'no results found',
+    'no more places'
+  ];
+
+  if (endMarkers.some((marker) => text.includes(marker))) {
+    return true;
+  }
+
+  // Check if we're at the bottom and no more loading indicators
+  const nearBottom = container.scrollHeight - (container.scrollTop + container.clientHeight) < 50;
+  const loadingIndicator = container.querySelector('[aria-label*="loading"], [role="progressbar"]');
+
+  if (nearBottom && !loadingIndicator) {
+    // Try one more small scroll
+    const beforeScrollHeight = container.scrollHeight;
+    container.scrollTop = container.scrollHeight;
+
+    // Check if we can scroll further
+    if (container.scrollHeight === beforeScrollHeight && container.scrollTop + container.clientHeight >= container.scrollHeight - 10) {
+      return true;
+    }
+  }
+
+  const cards = getGoogleMapsResultCards();
+  const noCards = cards.length === 0;
+
+  return noCards ? nearBottom : false;
 }
 
 function extractSelectedGoogleMapsPlace() {
@@ -372,6 +554,10 @@ function extractSelectedGoogleMapsPlace() {
   const ratingMatch = text.match(/(\d\.\d)\s*★?/);
   const reviewsMatch = text.match(/\(([\d,]+)\)/);
 
+  // Extract hours for selected place
+  const hoursMatch = text.match(/(Open|Closed|Opens at|Closes at)\s*(?:⋅)?\s*([^★\n]+)/i);
+  const hours = hoursMatch ? hoursMatch[0].trim() : '';
+
   if (!name && !phone && !website && !address) {
     return null;
   }
@@ -383,28 +569,37 @@ function extractSelectedGoogleMapsPlace() {
     website,
     address,
     rating: ratingMatch ? ratingMatch[1] : '',
-    reviews: reviewsMatch ? reviewsMatch[1] : ''
+    reviews: reviewsMatch ? reviewsMatch[1] : '',
+    hours
   });
 }
 
 function findGoogleMapsScrollContainer() {
-  // Primary from HTML: .m6QErb DxyBCb kA9KIf dS8AEf XiKgde ecceSd QjC7t[role="feed"]
-  let container = document.querySelector('.m6QErb.DxyBCb.kA9KIf.dS8AEf.XiKgde.ecceSd.QjC7t[role="feed"]') ||
-    document.querySelector('div.m6QErb.WNBkOb.XiKgde[role="main"]') ||
-    document.querySelector('.m6QErb[role="main"]');
-  if (container && isScrollableContainer(container)) {
-    console.log('[SCROLL] Found primary container:', container);
-    return container;
+  // Primary container selectors
+  const selectors = [
+    '.m6QErb.DxyBCb.kA9KIf.dS8AEf.XiKgde.ecceSd.QjC7t[role="feed"]',
+    'div.m6QErb.WNBkOb.XiKgde[role="main"]',
+    '.m6QErb[role="main"]',
+    'div[role="feed"]',
+    '.DxyBCb[role="feed"]'
+  ];
+
+  for (const selector of selectors) {
+    const container = document.querySelector(selector);
+    if (container && isScrollableContainer(container)) {
+      console.log('[SCROLL] Found primary container:', selector);
+      return container;
+    }
   }
 
-  // Fallback heuristic
+  // Fallback: find any scrollable container with cards
   const cards = getGoogleMapsResultCards();
-  const candidates = new Set(document.querySelectorAll('div[role="feed"], div[aria-label][tabindex="-1"], .m6QErb, div.DxyBCb[role="feed"]'));
+  const candidates = new Set();
 
   cards.slice(0, 5).forEach((card) => {
     let node = card?.parentElement;
     let depth = 0;
-    while (node && depth < 8) {
+    while (node && depth < 10) {
       if (isScrollableContainer(node)) {
         candidates.add(node);
       }
@@ -413,71 +608,33 @@ function findGoogleMapsScrollContainer() {
     }
   });
 
-  container = Array.from(candidates)
+  const container = Array.from(candidates)
     .filter((el) => isScrollableContainer(el))
     .filter((el) => el.querySelector('.Nv2PK, [role="article"]'))
     .sort((a, b) => scoreScrollContainer(b) - scoreScrollContainer(a))[0];
 
-  console.log('[SCROLL] Selected container:', container, 'Height:', container?.scrollHeight, 'Scrollable:', !!container);
+  console.log('[SCROLL] Selected container:', container, 'Height:', container?.scrollHeight);
   return container || null;
 }
 
-// Deprecated: scrollGoogleMapsResults - replaced by enhanced loadMoreGoogleMapsResults
-function scrollGoogleMapsResults(container) {
-  const increment = Math.max(container.clientHeight * 0.85, 600);
-  container.scrollBy({ top: increment, behavior: 'auto' });
-}
-
-async function autoScrollToEnd(container, maxAttempts = 40) {
-  console.log('[AUTO-SCROLL START] Container height:', container.scrollHeight, 'clientHeight:', container.clientHeight);
-
-  let previousHeight = container.scrollHeight;
-  let stableAttempts = 0;
-  const delay = 4000; // 4s for slow Maps
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const beforeHeight = container.scrollHeight;
-    const beforeCards = getGoogleMapsResultCards().length;
-
-    // Scroll to bottom + extra
-    container.scrollTop = container.scrollHeight;
-    container.dispatchEvent(new MouseEvent('scroll', { bubbles: true }));
-    window.dispatchEvent(new Event('scroll'));
-
-    await wait(delay);
-
-    const afterHeight = container.scrollHeight;
-    const afterCards = getGoogleMapsResultCards().length;
-
-    console.log(`[SCROLL ${attempt + 1}/${maxAttempts}] H:${beforeHeight}→${afterHeight} Δ+${afterHeight - beforeHeight} C:${beforeCards}→${afterCards}`);
-
-    if (afterHeight === previousHeight && afterCards === beforeCards) {
-      stableAttempts++;
-      console.log(`[STABLE ${stableAttempts}/3] No change`);
-      if (stableAttempts >= 3) break;
-    } else {
-      stableAttempts = 0;
-    }
-
-    previousHeight = afterHeight;
-  }
-
-  console.log('[AUTO-SCROLL END] Final:', getGoogleMapsResultCards().length, 'cards');
-}
-
-async function loadMoreGoogleMapsResults(container, previousState = {}) {
+async function loadMoreGoogleMapsResults(container) {
   if (!container) return { hasNewCards: false, reachedEnd: true };
 
-  // Lightweight check now that initial scroll is done
   const beforeCards = getGoogleMapsResultCards().length;
-  container.scrollTo(0, container.scrollHeight);
-  await wait(2000);
-  const afterCards = getGoogleMapsResultCards().length;
 
+  // Smooth scroll to bottom
+  container.scrollTo({
+    top: container.scrollHeight,
+    behavior: 'smooth'
+  });
+
+  await wait(2000);
+
+  const afterCards = getGoogleMapsResultCards().length;
   const hasNew = afterCards > beforeCards;
   const reachedEnd = hasReachedGoogleMapsResultsEnd(container);
 
-  console.log('[LOAD-MORE] Cards:', beforeCards, '→', afterCards, 'End:', reachedEnd);
+  console.log('[LOAD-MORE] Cards:', beforeCards, '→', afterCards, 'New:', hasNew, 'End:', reachedEnd);
   return { hasNewCards: hasNew, reachedEnd };
 }
 
@@ -487,7 +644,10 @@ function isScrollableContainer(el) {
   }
 
   const style = window.getComputedStyle(el);
-  return (style.overflowY === 'auto' || style.overflowY === 'scroll') && el.scrollHeight > el.clientHeight;
+  const hasScroll = style.overflowY === 'auto' || style.overflowY === 'scroll';
+  const canScroll = el.scrollHeight > el.clientHeight + 5;
+
+  return hasScroll && canScroll;
 }
 
 function scoreScrollContainer(el) {
@@ -510,7 +670,7 @@ function buildCardSnapshotKey(card) {
 }
 
 async function waitForGoogleMapsResultsChange(container, previousState = {}) {
-  const timeoutMs = 3500; // Increased for slower loads
+  const timeoutMs = 3500;
   const pollMs = 250;
   const start = Date.now();
 
@@ -533,31 +693,6 @@ async function waitForGoogleMapsResultsChange(container, previousState = {}) {
   }
 
   return { hasNewCards: false, reachedEnd: hasReachedGoogleMapsResultsEnd(container) };
-}
-
-function hasReachedGoogleMapsResultsEnd(container) {
-  if (!container) {
-    return true;
-  }
-
-  const text = normalizeWhitespace(container.innerText || '').toLowerCase();
-  const endMarkers = [
-    "you've reached the end of the list",
-    'you reached the end of the list',
-    'end of results',
-    'no more results',
-    'no results found'
-  ];
-
-  if (endMarkers.some((marker) => text.includes(marker))) {
-    return true;
-  }
-
-  const nearBottom = container.scrollHeight - (container.scrollTop + container.clientHeight) < 24;
-  const cards = getGoogleMapsResultCards();
-  const noCards = cards.length === 0;
-
-  return noCards ? nearBottom : false;
 }
 
 function containsResultCards(el) {
@@ -884,7 +1019,11 @@ function normalizeLead(lead) {
     rating: lead.rating?.trim() || '',
     reviews: lead.reviews?.trim() || '',
     website: lead.website?.trim() || '',
-    address: lead.address?.trim() || ''
+    address: lead.address?.trim() || '',
+    status: lead.status?.trim() || '',
+    priceRange: lead.priceRange?.trim() || '',
+    services: lead.services?.trim() || '',
+    hours: lead.hours?.trim() || ''
   };
 }
 
