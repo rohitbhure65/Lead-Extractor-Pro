@@ -1,7 +1,7 @@
 // Lead Extractor Pro - Background Service Worker
 // Handles extraction tasks and communication
 
-// Listen for messages from popup
+// Listen for messages from popup and content scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'extractFromUrl') {
     extractFromUrl(message.url, message.keywords)
@@ -11,6 +11,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     openWhatsAppAndSend(message.url)
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ error: error.message || 'Failed to open WhatsApp' }));
+  } else if (message.action === 'saveLeadRequest') {
+    // Relay saveLeadRequest from content script to popup
+    chrome.runtime.sendMessage({
+      action: 'saveLeadRequest',
+      lead: message.lead
+    }).catch(console.error);
+    sendResponse({ relayed: true });
   }
 
   return true;

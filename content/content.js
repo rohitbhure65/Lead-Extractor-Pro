@@ -36,8 +36,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.action === 'saveLeadRequest') {
+    const lead = extractCurrentPageLead();
+    if (lead) {
+      chrome.runtime.sendMessage({
+        action: 'saveLeadRequest',
+        lead: lead
+      });
+      sendResponse({ ready: true });
+    } else {
+      sendResponse({ error: 'No lead data found on page' });
+    }
+    return true;
+  }
   return false;
 });
+
+function extractCurrentPageLead() {
+  // Try Google Maps selected place first
+  if (isGoogleMapsPage()) {
+    const placeLead = extractSelectedGoogleMapsPlace();
+    if (placeLead && placeLead.name) {
+      placeLead.source = 'Google Maps - Selected Place';
+      return placeLead;
+    }
+  }
+
+  // Standard page extraction (top lead)
+  const leads = extractStandardLeads([], {});
+  if (leads.length > 0) {
+    leads[0].source = document.title.slice(0, 100);
+    return leads[0];
+  }
+
+  return null;
+}
 
 async function autoSendWhatsAppMessage() {
   if (!/(\.|^)whatsapp\.com$/i.test(window.location.hostname) && !/wa\.me$/i.test(window.location.hostname)) {

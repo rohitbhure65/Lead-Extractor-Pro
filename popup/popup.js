@@ -75,6 +75,7 @@ class LeadExtractor {
     document.getElementById('startExtraction').addEventListener('click', () => this.startExtraction());
     document.getElementById('stopExtraction').addEventListener('click', () => this.stopExtraction());
     document.getElementById('deduplicate').addEventListener('click', () => this.deduplicate());
+    document.getElementById('saveCurrentLead').addEventListener('click', () => this.requestSaveCurrentLead());
     document.getElementById('maxLeadsInput').addEventListener('change', () => this.handleLimitChange());
     document.getElementById('noLimitInput').addEventListener('change', () => this.handleNoLimitChange());
     document.getElementById('requirePhoneInput').addEventListener('change', () => this.handleRequirePhoneChange());
@@ -104,13 +105,49 @@ class LeadExtractor {
   }
 
   bindRuntimeListeners() {
-    chrome.runtime.onMessage.addListener((message) => {
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message?.action === 'extractionProgress') {
         this.handleExtractionProgress(message);
       } else if (message?.action === 'leadsCleared') {
         this.handleLeadsCleared();
+      } else if (message?.action === 'saveLeadRequest') {
+        this.handleSaveLeadRequest(message.lead, sendResponse);
+        return true;
       }
+      return false;
     });
+  }
+
+  async handleSaveLeadRequest(leadData, sendResponse) {
+    const customName = prompt('Enter custom name for this lead:', leadData.name || leadData.company || 'New Lead');
+    if (customName === null || customName.trim() === '') {
+      sendResponse({ saved: false, reason: 'cancelled' });
+      return;
+    }
+
+    const preparedLead = {
+      ...this.sanitizeLeadForStorage(leadData),
+      name: customName.trim(),
+      id: this.generateId(),
+      contacted: false,
+      contactedAt: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      source: leadData.source || document.title.slice(0, 100)
+    };
+
+    // Check for duplicate
+    if (this.isDuplicateLead(preparedLead)) {
+      this.showToast('Lead already exists (duplicate)', 'warning');
+      sendResponse({ saved: false, reason: 'duplicate' });
+      return;
+    }
+
+    await Storage.addLead(preparedLead);
+    await this.loadLeads();
+    this.updateCounts();
+    this.showToast(`"${customName}" saved to dashboard!`, 'success');
+    sendResponse({ saved: true, leadId: preparedLead.id });
   }
 
   renderExtractionSettings() {
@@ -165,6 +202,25 @@ class LeadExtractor {
       input.value = LeadExtractor.DEFAULT_WHATSAPP_MESSAGE;
     }
     await this.saveExtractionSettings();
+  }
+
+  async requestSaveCurrentLead() {
+    try {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tabs[0]?.id) {
+        this.showToast('No active tab found', 'error');
+        return;
+      }
+
+      this.showToast('Requesting lead data from page...', 'info');
+      const response = await chrome.tabs.sendMessage(tabs[0].id, { action: 'saveLeadRequest' });
+      if (response.saved) {
+        this.showToast('Lead saved successfully!', 'success');
+      }
+    } catch (error) {
+      console.error('Save lead error:', error);
+      this.showToast('Page not compatible or content script not loaded', 'error');
+    }
   }
 
   // Lead extraction
@@ -458,6 +514,7 @@ class LeadExtractor {
           </div>
           <div class="lead-meta">
             ${lead.contacted ? `Contacted${lead.contactedAt ? ` on ${new Date(lead.contactedAt).toLocaleDateString()}` : ''}` : 'Not contacted yet'}
+            ${lead.source ? `<div class="lead-source">${lead.source.slice(0, 40)}${lead.source.length > 40 ? '...' : ''}</div>` : ''}
           </div>
         </div>
         <div class="lead-actions">
