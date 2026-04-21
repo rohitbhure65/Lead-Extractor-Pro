@@ -28,8 +28,66 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
+  if (message.action === 'autoSendWhatsApp') {
+    autoSendWhatsAppMessage()
+      .then(() => sendResponse({ sent: true }))
+      .catch((error) => sendResponse({ error: error.message }));
+
+    return true;
+  }
+
   return false;
 });
+
+async function autoSendWhatsAppMessage() {
+  if (!/(\.|^)whatsapp\.com$/i.test(window.location.hostname) && !/wa\.me$/i.test(window.location.hostname)) {
+    throw new Error('Not on a WhatsApp page');
+  }
+
+  const timeoutMs = 15000;
+  const pollMs = 500;
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    const sendButton = findWhatsAppSendButton();
+    if (sendButton && !sendButton.disabled) {
+      sendButton.click();
+      return;
+    }
+
+    await wait(pollMs);
+  }
+
+  throw new Error('Send button not ready');
+}
+
+function findWhatsAppSendButton() {
+  const selectors = [
+    'button[aria-label="Send"]',
+    'button[aria-label="Send message"]',
+    'button[data-testid="compose-btn-send"]',
+    'button[data-testid="send"]',
+    'span[data-icon="send"]'
+  ];
+
+  for (const selector of selectors) {
+    const el = document.querySelector(selector);
+    if (!el) {
+      continue;
+    }
+
+    if (el.tagName === 'BUTTON') {
+      return el;
+    }
+
+    const button = el.closest('button');
+    if (button) {
+      return button;
+    }
+  }
+
+  return null;
+}
 
 async function handleExtractionRequest(message) {
   const sessionId = message.sessionId || `session_${Date.now()}`;

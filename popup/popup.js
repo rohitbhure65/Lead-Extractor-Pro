@@ -1,16 +1,15 @@
 // Lead Extractor Pro - Popup Script
 
 class LeadExtractor {
+  static DEFAULT_COUNTRY_CODE = '+91';
   static DEFAULT_WHATSAPP_MESSAGE = 'Hi, I found your business details and wanted to connect regarding your services.';
 
   constructor() {
-    this.keywords = [];
     this.leads = [];
     this.filteredLeads = [];
     this.renderedLeadCount = 0;
     this.renderBatchSize = 25;
     this.isExtracting = false;
-    this.maxKeywords = 15;
     this.activeSessionId = null;
     this.currentTabId = null;
     this.currentSessionSaved = 0;
@@ -22,31 +21,23 @@ class LeadExtractor {
   }
 
   async init() {
-    await this.loadKeywords();
     await this.loadLeads();
     await this.loadExtractionSettings();
     this.bindEvents();
     this.bindRuntimeListeners();
-    this.renderKeywords();
+    this.renderVersion();
     this.updateCounts();
     this.renderExtractionSettings();
   }
 
   // Storage methods
-  async loadKeywords() {
-    this.keywords = await Storage.get('keywords') || [];
-  }
-
-  async saveKeywords() {
-    await Storage.set('keywords', this.keywords);
-  }
-
   async loadExtractionSettings() {
     const saved = await Storage.get('extractionSettings');
     this.extractionSettings = {
       limit: saved?.limit || 100,
       noLimit: Boolean(saved?.noLimit),
       requirePhone: Boolean(saved?.requirePhone),
+      countryCode: this.normalizeCountryCode(saved?.countryCode || LeadExtractor.DEFAULT_COUNTRY_CODE),
       whatsAppMessage: saved?.whatsAppMessage?.trim() || LeadExtractor.DEFAULT_WHATSAPP_MESSAGE
     };
   }
@@ -54,12 +45,18 @@ class LeadExtractor {
   async saveExtractionSettings() {
     const limitInput = document.getElementById('maxLeadsInput');
     const noLimitInput = document.getElementById('noLimitInput');
+    const countryCodeInput = document.getElementById('countryCodeInput');
     const parsedLimit = parseInt(limitInput.value, 10);
+    const countryCodeDigits = this.getCountryCodeDigits(countryCodeInput.value);
+    const countryCode = this.normalizeCountryCode(countryCodeDigits || LeadExtractor.DEFAULT_COUNTRY_CODE);
+
+    countryCodeInput.value = this.getCountryCodeDigits(countryCode);
 
     this.extractionSettings = {
       limit: Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 100,
       noLimit: noLimitInput.checked,
       requirePhone: document.getElementById('requirePhoneInput').checked,
+      countryCode,
       whatsAppMessage: this.getWhatsAppMessage()
     };
 
@@ -74,13 +71,6 @@ class LeadExtractor {
 
   // Event binding
   bindEvents() {
-    // Keywords
-    document.getElementById('addKeyword').addEventListener('click', () => this.addKeyword());
-    document.getElementById('keywordInput').addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') this.addKeyword();
-    });
-    document.getElementById('clearKeywords').addEventListener('click', () => this.clearKeywords());
-
     // Extraction
     document.getElementById('startExtraction').addEventListener('click', () => this.startExtraction());
     document.getElementById('stopExtraction').addEventListener('click', () => this.stopExtraction());
@@ -88,6 +78,9 @@ class LeadExtractor {
     document.getElementById('maxLeadsInput').addEventListener('change', () => this.handleLimitChange());
     document.getElementById('noLimitInput').addEventListener('change', () => this.handleNoLimitChange());
     document.getElementById('requirePhoneInput').addEventListener('change', () => this.handleRequirePhoneChange());
+    document.getElementById('countryCodeInput').addEventListener('input', (e) => this.handleCountryCodeInput(e));
+    document.getElementById('countryCodeInput').addEventListener('change', () => this.handleCountryCodeChange());
+    document.getElementById('countryCodeInput').addEventListener('blur', () => this.handleCountryCodeChange());
     document.getElementById('whatsAppMessageInput').addEventListener('change', () => this.handleWhatsAppMessageChange());
     document.getElementById('whatsAppMessageInput').addEventListener('blur', () => this.handleWhatsAppMessageChange());
 
@@ -95,6 +88,7 @@ class LeadExtractor {
     document.getElementById('searchInput').addEventListener('input', (e) => this.filterLeads(e.target.value));
     document.getElementById('filterSelect').addEventListener('change', (e) => this.filterByType(e.target.value));
     document.getElementById('leadsList').addEventListener('scroll', () => this.handleLeadListScroll());
+    document.getElementById('leadsList').addEventListener('click', (e) => this.handleLeadActionClick(e));
 
     // Export
     document.getElementById('exportCSV').addEventListener('click', () => this.exportCSV());
@@ -106,12 +100,15 @@ class LeadExtractor {
     document.getElementById('addLeadForm').addEventListener('submit', (e) => this.handleAddLead(e));
     document.getElementById('closeEditModal').addEventListener('click', () => this.closeEditModal());
     document.getElementById('editLeadForm').addEventListener('submit', (e) => this.handleEditLead(e));
+    document.getElementById('closeWindowBtn').addEventListener('click', () => window.close());
   }
 
   bindRuntimeListeners() {
     chrome.runtime.onMessage.addListener((message) => {
       if (message?.action === 'extractionProgress') {
         this.handleExtractionProgress(message);
+      } else if (message?.action === 'leadsCleared') {
+        this.handleLeadsCleared();
       }
     });
   }
@@ -120,9 +117,17 @@ class LeadExtractor {
     document.getElementById('maxLeadsInput').value = this.extractionSettings.limit;
     document.getElementById('noLimitInput').checked = this.extractionSettings.noLimit;
     document.getElementById('requirePhoneInput').checked = this.extractionSettings.requirePhone;
+    document.getElementById('countryCodeInput').value = this.getCountryCodeDigits(this.extractionSettings.countryCode);
     document.getElementById('whatsAppMessageInput').value = this.extractionSettings.whatsAppMessage;
     document.getElementById('maxLeadsInput').disabled = this.extractionSettings.noLimit;
     this.setExtractionStatus('Ready to scan current page');
+  }
+
+  renderVersion() {
+    const versionBadge = document.getElementById('versionBadge');
+    if (versionBadge) {
+      versionBadge.textContent = `v${chrome.runtime.getManifest().version}`;
+    }
   }
 
   async handleLimitChange() {
@@ -138,58 +143,22 @@ class LeadExtractor {
     await this.saveExtractionSettings();
   }
 
+  handleCountryCodeInput(event) {
+    event.target.value = this.getCountryCodeDigits(event.target.value);
+  }
+
+  async handleCountryCodeChange() {
+    const input = document.getElementById('countryCodeInput');
+    input.value = this.getCountryCodeDigits(input.value);
+    await this.saveExtractionSettings();
+  }
+
   async handleWhatsAppMessageChange() {
     const input = document.getElementById('whatsAppMessageInput');
     if (!input.value.trim()) {
       input.value = LeadExtractor.DEFAULT_WHATSAPP_MESSAGE;
     }
     await this.saveExtractionSettings();
-  }
-
-  // Keyword methods
-  addKeyword() {
-    const input = document.getElementById('keywordInput');
-    const keyword = input.value.trim().toLowerCase();
-
-    if (!keyword) return;
-    if (this.keywords.includes(keyword)) {
-      this.showToast('Keyword already exists', 'error');
-      return;
-    }
-    if (this.keywords.length >= this.maxKeywords) {
-      this.showToast(`Maximum ${this.maxKeywords} keywords allowed`, 'error');
-      return;
-    }
-
-    this.keywords.push(keyword);
-    input.value = '';
-    this.saveKeywords();
-    this.renderKeywords();
-    this.updateCounts();
-  }
-
-  removeKeyword(keyword) {
-    this.keywords = this.keywords.filter(k => k !== keyword);
-    this.saveKeywords();
-    this.renderKeywords();
-    this.updateCounts();
-  }
-
-  clearKeywords() {
-    this.keywords = [];
-    this.saveKeywords();
-    this.renderKeywords();
-    this.updateCounts();
-  }
-
-  renderKeywords() {
-    const container = document.getElementById('keywordsList');
-    container.innerHTML = this.keywords.map(keyword => `
-      <span class="keyword-tag">
-        ${keyword}
-        <button type="button" onclick="app.removeKeyword('${keyword}')">&times;</button>
-      </span>
-    `).join('');
   }
 
   // Lead extraction
@@ -204,20 +173,22 @@ class LeadExtractor {
     this.setExtractionStatus('Starting extraction...');
 
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tab = await this.getExtractionTab();
       if (!tab?.id) {
         throw new Error('No active tab found');
       }
 
       await this.saveExtractionSettings();
+      if (!this.extractionSettings.countryCode) {
+        throw new Error('Enter country code in + format, for example +91');
+      }
+
       this.currentTabId = tab.id;
       this.activeSessionId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
       // Send message to content script
       const response = await chrome.tabs.sendMessage(tab.id, {
         action: 'extract',
-        keywords: this.keywords,
-        source: tab.url,
         sessionId: this.activeSessionId,
         options: {
           maxLeads: this.extractionSettings.noLimit ? null : this.extractionSettings.limit,
@@ -287,6 +258,11 @@ class LeadExtractor {
   updateExtractionButtons() {
     document.getElementById('startExtraction').disabled = this.isExtracting;
     document.getElementById('stopExtraction').disabled = !this.isExtracting;
+  }
+
+  async getExtractionTab() {
+    const activeTabs = await chrome.tabs.query({ active: true });
+    return activeTabs.find((tab) => tab.id && tab.url && !tab.url.startsWith('chrome-extension://')) || null;
   }
 
   // Deduplication
@@ -377,6 +353,12 @@ class LeadExtractor {
     }
   }
 
+  async handleLeadsCleared() {
+    await this.loadLeads();
+    this.updateCounts();
+    this.setExtractionStatus('Saved leads cleared after page refresh');
+  }
+
   filterLeads(query) {
     this.searchQuery = query;
     this.applyLeadFilters();
@@ -390,7 +372,7 @@ class LeadExtractor {
   applyLeadFilters() {
     const searchTerm = this.searchQuery.toLowerCase().trim();
 
-    this.filteredLeads = this.leads.filter((lead) => {
+    const filtered = this.leads.filter((lead) => {
       const matchesSearch = !searchTerm || [
         lead.name,
         lead.email,
@@ -412,10 +394,16 @@ class LeadExtractor {
           return Boolean(lead.phone);
         case 'company':
           return Boolean(lead.company);
+        case 'rating':
+          return this.getRatingValue(lead.rating) > 0;
         default:
           return true;
       }
     });
+
+    this.filteredLeads = this.typeFilter === 'rating'
+      ? filtered.sort((a, b) => this.getRatingValue(b.rating) - this.getRatingValue(a.rating))
+      : filtered;
 
     this.renderLeads(true);
   }
@@ -459,13 +447,13 @@ class LeadExtractor {
           </div>
         </div>
         <div class="lead-actions">
-          <button class="lead-action-btn whatsapp" title="Send WhatsApp" onclick="app.openWhatsApp('${lead.id}')"
+          <button type="button" class="lead-action-btn whatsapp" title="Send WhatsApp" data-action="whatsapp" data-id="${lead.id}"
             ${this.hasWhatsAppNumber(lead) ? '' : 'disabled'}>WA</button>
-          <button class="lead-action-btn contact ${lead.contacted ? 'active' : ''}" title="Mark contacted" onclick="app.toggleContacted('${lead.id}')">
+          <button type="button" class="lead-action-btn contact ${lead.contacted ? 'active' : ''}" title="Mark contacted" data-action="contact" data-id="${lead.id}">
             ${lead.contacted ? '✓' : '☐'}
           </button>
-          <button class="lead-action-btn edit" title="Edit" onclick="app.editLead('${lead.id}')">✏</button>
-          <button class="lead-action-btn delete" title="Delete" onclick="app.deleteLead('${lead.id}')">🗑</button>
+          <button type="button" class="lead-action-btn edit" title="Edit" data-action="edit" data-id="${lead.id}">✏</button>
+          <button type="button" class="lead-action-btn delete" title="Delete" data-action="delete" data-id="${lead.id}">🗑</button>
         </div>
       </div>
     `).join('');
@@ -485,6 +473,31 @@ class LeadExtractor {
 
     if (remaining <= 48) {
       this.renderLeads();
+    }
+  }
+
+  handleLeadActionClick(event) {
+    const button = event.target.closest('button[data-action][data-id]');
+    if (!button || button.disabled) {
+      return;
+    }
+
+    const { action, id } = button.dataset;
+    switch (action) {
+      case 'whatsapp':
+        this.openWhatsApp(id);
+        break;
+      case 'contact':
+        this.toggleContacted(id);
+        break;
+      case 'edit':
+        this.editLead(id);
+        break;
+      case 'delete':
+        this.deleteLead(id);
+        break;
+      default:
+        break;
     }
   }
 
@@ -569,7 +582,6 @@ class LeadExtractor {
       jobTitle: form.jobTitle.value,
       website: form.website.value,
       address: form.address.value,
-      keywords: [],
       contacted: false,
       contactedAt: null,
       createdAt: Date.now(),
@@ -677,17 +689,6 @@ class LeadExtractor {
     };
   }
 
-  matchKeywords(lead) {
-    if (!this.keywords.length) return [];
-
-    const text = [lead.name, lead.company, lead.jobTitle, lead.email]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase();
-
-    return this.keywords.filter(keyword => text.includes(keyword));
-  }
-
   normalizeStoredLead(lead) {
     return {
       ...lead,
@@ -701,8 +702,42 @@ class LeadExtractor {
     return input?.value?.trim() || LeadExtractor.DEFAULT_WHATSAPP_MESSAGE;
   }
 
+  normalizeCountryCode(value) {
+    const digits = this.getCountryCodeDigits(value);
+    return digits ? `+${digits}` : '';
+  }
+
+  getCountryCodeDigits(value) {
+    return String(value || '').replace(/\D/g, '');
+  }
+
+  getRatingValue(value) {
+    const parsed = parseFloat(String(value || '').replace(/[^0-9.]/g, ''));
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
   formatPhoneForWhatsApp(phone) {
-    return (phone || '').replace(/\D/g, '');
+    const digits = (phone || '').replace(/\D/g, '');
+    if (!digits) {
+      return '';
+    }
+
+    const countryCodeDigits = this.extractionSettings?.countryCode?.replace(/\D/g, '') || '';
+    if (!countryCodeDigits) {
+      return digits;
+    }
+
+    const trimmedPhone = (phone || '').trim();
+    if (trimmedPhone.startsWith('+')) {
+      return digits;
+    }
+
+    if (digits.startsWith(countryCodeDigits) && digits.length > Math.max(countryCodeDigits.length + 6, 10)) {
+      return digits;
+    }
+
+    const localDigits = digits.replace(/^0+/, '') || digits;
+    return `${countryCodeDigits}${localDigits}`;
   }
 
   hasWhatsAppNumber(lead) {
@@ -747,7 +782,18 @@ class LeadExtractor {
 
     await this.saveExtractionSettings();
     const url = this.buildWhatsAppUrl(lead);
-    await chrome.tabs.create({ url });
+    if (!url) {
+      this.showToast('WhatsApp link could not be generated', 'error');
+      return;
+    }
+
+    try {
+      await chrome.tabs.create({ url, active: true });
+    } catch (error) {
+      window.open(url, '_blank', 'noopener');
+    }
+
+    this.showToast('WhatsApp link opened', 'success');
   }
 
   async toggleContacted(id) {
@@ -787,7 +833,6 @@ class LeadExtractor {
   }
 
   updateCounts() {
-    document.getElementById('keywordCount').textContent = `${this.keywords.length}/${this.maxKeywords}`;
     document.getElementById('leadCount').textContent = `${this.leads.length} leads`;
   }
 

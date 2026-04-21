@@ -5,9 +5,9 @@
 
 ## 1. Project Overview
 
-**Project Name:** Lead Extractor Pro  
-**Project Type:** Chrome Browser Extension  
-**Core Summary:** A browser extension that enables users to extract, manage, and export leads (names, emails, phone numbers, company details) from websites with keyword-based filtering and deduplication capabilities.  
+**Project Name:** Lead Extractor Pro
+**Project Type:** Chrome Browser Extension
+**Core Summary:** A browser extension that enables users to extract, manage, and export leads (names, emails, phone numbers, company details) from websites with keyword-based filtering and deduplication capabilities.
 **Target Release:** v1.0.0
 
 ---
@@ -244,7 +244,7 @@ lead-extractor-pro/
 **Popup View (400x600px)**
 ```
 ┌─────────────────────────────────┐
-│  🔷 Lead Extractor Pro     [⚙] │
+│  Lead Extractor Pro     [⚙] │
 ├─────────────────────────────────┤
 │  ┌─ Keyword Panel ────────────┐│
 │  │ Keywords (10-15):           ││
@@ -532,6 +532,6 @@ Database: LeadExtractorDB
 
 ---
 
-*Document Version: 1.0*  
-*Created: April 21, 2026*  
+*Document Version: 1.0*
+*Created: April 21, 2026*
 *Author: Lead Extractor Pro Team*
