@@ -36,8 +36,68 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.action === 'saveLeadRequest') {
+    const leads = extractAllCurrentPageLeads();
+    if (leads.length > 0) {
+      chrome.runtime.sendMessage({
+        action: 'saveLeadsRequest',
+        leads: leads
+      });
+      sendResponse({ count: leads.length });
+    } else {
+      sendResponse({ error: 'No lead data found on page' });
+    }
+    return true;
+  }
   return false;
 });
+
+function extractAllCurrentPageLeads() {
+  const allLeads = [];
+  const source = document.title.slice(0, 100);
+
+  // 1. Google Maps specific extraction
+  if (isGoogleMapsPage()) {
+    // Try list results first
+    const cards = getGoogleMapsResultCards();
+    if (cards.length > 0) {
+      console.log(`[SAVE CURRENT] Found ${cards.length} cards on Maps search`);
+      const listLeads = cards.map(card => extractGoogleMapsCardLead(card)).filter(Boolean);
+      listLeads.forEach(l => l.source = `Google Maps List - ${source}`);
+      allLeads.push(...listLeads);
+    }
+    
+    // Also try the selected place if any (might be different or redundant)
+    const placeLead = extractSelectedGoogleMapsPlace();
+    if (placeLead && placeLead.name) {
+      placeLead.source = `Google Maps Place - ${source}`;
+      // Deduplicate against list results by name/phone
+      const exists = allLeads.some(l => 
+        (l.name === placeLead.name) || 
+        (l.phone && l.phone === placeLead.phone)
+      );
+      if (!exists) {
+        allLeads.push(placeLead);
+      }
+    }
+  }
+
+  // 2. Standard page extraction (if no leads found or not Google Maps)
+  if (allLeads.length === 0) {
+    const standardLeads = extractStandardLeads([], {});
+    standardLeads.forEach(l => l.source = source);
+    allLeads.push(...standardLeads);
+  }
+
+  // Deduplicate by name + phone within this snapshot
+  const seen = new Set();
+  return allLeads.filter(lead => {
+    const key = `${lead.name}|${lead.phone}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
 async function autoSendWhatsAppMessage() {
   if (!/(\.|^)whatsapp\.com$/i.test(window.location.hostname) && !/wa\.me$/i.test(window.location.hostname)) {
@@ -135,6 +195,43 @@ function extractStandardLeads(keywords = [], options = {}) {
     .filter((lead) => lead.name || lead.phone || lead.company || lead.website || lead.address);
 }
 
+// FIXED: More lenient filter for Google Maps business listings
+// Accept ANY business card with basic identification data
+function matchesLeadRequirements(lead, options = {}) {
+  const requirePhone = options.requirePhone || false;
+
+  // FIXED: Very relaxed criteria - accept ANY listing with any data
+  const hasAnyData =
+    lead.name ||
+    lead.company ||
+    lead.address ||
+    lead.category ||
+    lead.rating ||
+    lead.status ||
+    lead.phone ||
+    lead.website;
+
+  if (!hasAnyData) {
+    console.log('[FILTER] ❌ Rejected completely empty lead:', lead);
+    return false;
+  }
+
+  // Only require phone if explicitly requested
+  if (requirePhone && !lead.phone) {
+    console.log('[FILTER] ❌ Rejected no-phone lead (requirePhone=true):', { name: lead.name, company: lead.company });
+    return false;
+  }
+
+  console.log('[FILTER] ✅ Accepted listing:', {
+    name: lead.name?.slice(0, 30),
+    company: lead.company?.slice(0, 30),
+    category: lead.category?.slice(0, 30),
+    hasPhone: !!lead.phone,
+    hasRating: !!lead.rating
+  });
+  return true;
+}
+
 async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }) {
   const maxLeads = options.noLimit ? null : parsePositiveInt(options.maxLeads);
   const seen = new Set();
@@ -153,8 +250,8 @@ async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }
 
   // Enhanced auto-scroll with proper detection
   await enhancedAutoScroll(scrollContainer, {
-    maxAttempts: 50,
-    scrollDelay: 2500,
+    maxAttempts: 1000,
+    scrollDelay: 5000,
     debug: true
   });
 
@@ -168,7 +265,35 @@ async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }
     // Load more results if available
     await loadMoreGoogleMapsResults(scrollContainer);
 
-    const batch = extractGoogleMapsVisibleLeads({ keywords, seen, maxLeads, options });
+    // FIXED: Define extractGoogleMapsVisibleLeads (was missing)
+    const batch = (() => {
+      const cards = getGoogleMapsResultCards();
+      console.log(`[EXTRACT] Processing ${cards.length} cards`);
+
+      const extracted = cards.map((card, index) => {
+        const lead = extractGoogleMapsCardLead(card);
+        if (lead) {
+          console.log(`[EXTRACT] Card ${index}:`, lead);
+        }
+        return lead;
+      }).filter(Boolean);
+
+      console.log(`[EXTRACT] Raw extracted: ${extracted.length} leads`);
+
+      const filtered = extracted
+        .filter(lead => !seen.has(buildLeadKey(lead)))
+        .filter(lead => matchesLeadRequirements(lead, options))
+        .filter((lead, index, self) => {
+          const key = buildLeadKey(lead);
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return maxLeads ? self.length < maxLeads : true;
+        });
+
+      console.log(`[EXTRACT] Filtered/unique: ${filtered.length} leads (seen: ${seen.size})`);
+      return filtered;
+    })();
+
     const visibleCards = getGoogleMapsResultCards();
     const lastCardKey = buildCardSnapshotKey(visibleCards[visibleCards.length - 1]);
 
@@ -217,13 +342,21 @@ async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }
   }
 
   const stopped = extractionState.stopRequested;
+
+  // IMPROVED: Better final message
+  let finalStatus = stopped ? `Stopped.` : `Completed.`;
+  if (bufferedLeads.length === 0) {
+    finalStatus += ' No valid business listings found matching criteria';
+    console.log('[FINAL] No leads extracted. Check console for filter logs.');
+  } else {
+    finalStatus += ` ${bufferedLeads.length} business leads ready!`;
+  }
+
   await reportExtractionProgress({
     sessionId,
     leads: [],
     savedCount: bufferedLeads.length,
-    statusText: stopped
-      ? `Stopped. ${bufferedLeads.length} leads ready`
-      : `Completed. ${bufferedLeads.length} leads ready`,
+    statusText: finalStatus,
     percent: 100,
     complete: true
   });
@@ -238,8 +371,8 @@ async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }
 // NEW: Enhanced auto-scroll function with proper detection
 async function enhancedAutoScroll(container, options = {}) {
   const {
-    maxAttempts = 50,
-    scrollDelay = 2500,
+    maxAttempts = 1000,
+    scrollDelay = 5000,
     debug = true
   } = options;
 
@@ -248,7 +381,7 @@ async function enhancedAutoScroll(container, options = {}) {
   let noChangeCount = 0;
   let consecutiveNoCards = 0;
 
-  const log = debug ? (...args) => console.log('[AUTO-SCROLL]', ...args) : () => {};
+  const log = debug ? (...args) => console.log('[AUTO-SCROLL]', ...args) : () => { };
 
   log('Starting enhanced auto-scroll');
   log(`Initial card count: ${getGoogleMapsResultCards().length}`);
@@ -367,26 +500,46 @@ async function waitForGoogleMapsReady() {
   const delay = 500;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const container = document.querySelector('.m6QErb.DxyBCb.kA9KIf.dS8AEf.XiKgde.ecceSd.QjC7t[role="feed"]');
+    // Try multiple container selectors for Google Maps
+    const containerSelectors = [
+      '.m6QErb.DxyBCb.kA9KIf.dS8AEf.XiKgde.ecceSd.QjC7t[role="feed"]',
+      '.m6QErb[role="feed"]',
+      '[role="feed"]',
+      '.DxyBCb',
+      '.m6QErb'
+    ];
+
+    let container = null;
+    for (const selector of containerSelectors) {
+      container = document.querySelector(selector);
+      if (container) break;
+    }
+
     const cards = getGoogleMapsResultCards();
 
-    if (container && cards.length > 0) {
-      console.log('[MAPS READY] Container found with', cards.length, 'cards');
+    console.log(`[MAPS READY] Attempt ${attempt + 1}: Container found: ${!!container}, Cards: ${cards.length}`);
+
+    if (container || cards.length > 0) {
+      console.log('[MAPS READY] Maps ready - Container found:', !!container, 'Cards:', cards.length);
       return true;
     }
 
     await wait(delay);
   }
 
-  console.warn('[MAPS READY] Timeout waiting for Maps to be ready');
-  return false;
+  console.warn('[MAPS READY] Timeout waiting for Maps - proceeding anyway');
+  // Don't fail - proceed and try to extract anyway
+  return true;
 }
 
 // ENHANCED: Extract more data from Google Maps card
 function extractGoogleMapsCardLead(card) {
   const rawText = card.innerText || '';
   const text = normalizeWhitespace(rawText);
+
+  // If there's any text in the card, try to extract data
   if (!text) {
+    console.log('[EXTRACT] Empty card, skipping');
     return null;
   }
 
@@ -402,7 +555,8 @@ function extractGoogleMapsCardLead(card) {
     '.fontBodyMedium > div:first-child',
     '[role="heading"]',
     '.lMbq3e',
-    'div[role="article"] div:first-child'
+    'div[role="article"] div:first-child',
+    'a.hfpxzc[aria-label]'
   ]) || lines[0] || '';
 
   // Extract rating and review count
@@ -410,7 +564,10 @@ function extractGoogleMapsCardLead(card) {
   const reviewsMatch = text.match(/\(([\d,]+)\)/);
 
   // Extract phone with better regex
-  const phoneMatch = text.match(/(?:\+?\d[\d\s().-]{7,}\d)/);
+  // IMPROVED: Better international phone regex for India/etc.
+  const phoneMatch = text.match(/(\+?\d[\s\-\(\)\.]?)?\(?(\d{3})\)?[\s\-\(\)\.]?(\d{3})[\s\-\(\)\.]?(\d{4})/) ||
+    text.match(/(\+91[\s\-]?)?\d{10}/) ||
+    text.match(/(?:\+?\d[\d\s().-]{7,}\d)/);
 
   // Extract website
   const website = card.querySelector('a[href^="http"]:not([href*="google.com"])')?.href || '';
@@ -461,7 +618,14 @@ function extractGoogleMapsCardLead(card) {
     rawData: text.substring(0, 500) // Store raw data for debugging
   });
 
-  return lead.name || lead.phone || lead.website ? lead : null;
+  // FIXED: Accept leads with ANY data (name is most important)
+  if (!lead.name && !lead.phone && !lead.website) {
+    console.log('[EXTRACT] Rejecting card with no name/phone/website:', text.slice(0, 100));
+    return null;
+  }
+
+  console.log('[EXTRACT] Extracted lead:', { name: lead.name?.slice(0, 30), phone: lead.phone ? 'yes' : 'no' });
+  return lead;
 }
 
 // ENHANCED: Get all result cards with better selection
@@ -469,35 +633,57 @@ function getGoogleMapsResultCards() {
   const selectorList = [
     '.Nv2PK', // Primary selector
     '.Nv2PK.THOPZb',
-    '[role="feed"] [role="article"]',
     '.THOPZb',
-    'a.hfpxzc',
-    'div[aria-label] > a[href*="/maps/place/"]',
-    '[role="feed"] > div > div > div',
-    '.m6QErb [role="article"]'
+    'a.hfpxzc',  // Links to places
+    '[role="feed"] [role="article"]',
+    '[role="feed"] > div > div',
+    '.m6QErb [role="article"]',
+    '.m6QErb .Nv2PK',
+    'div[aria-label][data-result]',
+    // New selectors for current Google Maps
+    '.place-result',
+    '.search-results .result'
   ];
 
   const cards = [];
   const seen = new Set();
 
   selectorList.forEach((selector) => {
-    document.querySelectorAll(selector).forEach((node) => {
-      const card = node.closest('[role="article"], .Nv2PK, .THOPZb, [role="feed"] > div > div') || node;
-      const text = normalizeWhitespace(card.innerText || '');
-      if (!text) {
-        return;
-      }
+    try {
+      document.querySelectorAll(selector).forEach((node) => {
+        // Try to find the closest card container
+        const card = node.closest('[role="article"]') ||
+          node.closest('.Nv2PK') ||
+          node.closest('.THOPZb') ||
+          node.closest('[role="feed"] > div') ||
+          node;
 
-      const key = `${card.className || card.tagName}|${text.slice(0, 120)}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        cards.push(card);
-      }
-    });
+        const text = normalizeWhitespace(card.innerText || '');
+        if (!text || text.length < 3) {
+          return;
+        }
+
+        const key = `${card.className || card.tagName}|${text.slice(0, 120)}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          cards.push(card);
+        }
+      });
+    } catch (e) {
+      // Ignore invalid selectors
+    }
   });
 
-  // Remove duplicates and sort by position
-  return [...new Map(cards.map(card => [card, card])).values()];
+  // Sort cards by their vertical position (top to bottom)
+  const sortedCards = [...new Map(cards.map(card => [card, card])).values()]
+    .sort((a, b) => {
+      const rectA = a.getBoundingClientRect();
+      const rectB = b.getBoundingClientRect();
+      return rectA.top - rectB.top;
+    });
+
+  console.log('[CARDS] Found', sortedCards.length, 'result cards');
+  return sortedCards;
 }
 
 // ENHANCED: Check if reached end of results
@@ -575,19 +761,25 @@ function extractSelectedGoogleMapsPlace() {
 }
 
 function findGoogleMapsScrollContainer() {
-  // Primary container selectors
+  // Enhanced container selectors for current Google Maps
   const selectors = [
+    // Primary feed container (most common)
     '.m6QErb.DxyBCb.kA9KIf.dS8AEf.XiKgde.ecceSd.QjC7t[role="feed"]',
+    '.m6QErb[role="feed"]',
+    '[role="feed"]',
+    // Alternative containers
     'div.m6QErb.WNBkOb.XiKgde[role="main"]',
     '.m6QErb[role="main"]',
-    'div[role="feed"]',
-    '.DxyBCb[role="feed"]'
+    '.DxyBCb[role="feed"]',
+    // Fallback to any scrollable results container
+    '.DxyBCb',
+    '.m6QErb'
   ];
 
   for (const selector of selectors) {
     const container = document.querySelector(selector);
     if (container && isScrollableContainer(container)) {
-      console.log('[SCROLL] Found primary container:', selector);
+      console.log('[SCROLL] Found container:', selector);
       return container;
     }
   }
@@ -613,8 +805,11 @@ function findGoogleMapsScrollContainer() {
     .filter((el) => el.querySelector('.Nv2PK, [role="article"]'))
     .sort((a, b) => scoreScrollContainer(b) - scoreScrollContainer(a))[0];
 
-  console.log('[SCROLL] Selected container:', container, 'Height:', container?.scrollHeight);
-  return container || null;
+  if (container) {
+    console.log('[SCROLL] Fallback container found:', container.className);
+  }
+
+  return container || document.body; // Never return null - use body as last resort
 }
 
 async function loadMoreGoogleMapsResults(container) {

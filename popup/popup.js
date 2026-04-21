@@ -6,14 +6,16 @@ class LeadExtractor {
 
   constructor() {
     this.leads = [];
+    this.extractedLeads = [];
+    this.savedLeads = [];
     this.filteredLeads = [];
+    this.activeTab = 'extracted'; // 'extracted' or 'saved'
     this.renderedLeadCount = 0;
     this.renderBatchSize = 25;
     this.isExtracting = false;
     this.activeSessionId = null;
     this.currentTabId = null;
     this.currentSessionSaved = 0;
-    this.autoExportOnStop = false;
     this.searchQuery = '';
     this.typeFilter = 'all';
 
@@ -35,8 +37,8 @@ class LeadExtractor {
     const saved = await Storage.get('extractionSettings');
     this.extractionSettings = {
       limit: saved?.limit || 100,
-      noLimit: Boolean(saved?.noLimit),
-      requirePhone: Boolean(saved?.requirePhone),
+      noLimit: Boolean(saved?.noLimit) || true,
+      requirePhone: Boolean(saved?.requirePhone) || true, // Default ON as requested
       countryCode: this.normalizeCountryCode(saved?.countryCode || LeadExtractor.DEFAULT_COUNTRY_CODE),
       whatsAppMessage: saved?.whatsAppMessage?.trim() || LeadExtractor.DEFAULT_WHATSAPP_MESSAGE
     };
@@ -66,6 +68,11 @@ class LeadExtractor {
   async loadLeads() {
     const storedLeads = await Storage.getAllLeads();
     this.leads = storedLeads.map((lead) => this.normalizeStoredLead(lead));
+    
+    // Separate leads by type
+    this.extractedLeads = this.leads.filter(l => !l.type || l.type === 'extracted');
+    this.savedLeads = this.leads.filter(l => l.type === 'saved');
+    
     this.applyLeadFilters();
   }
 
@@ -73,8 +80,12 @@ class LeadExtractor {
   bindEvents() {
     // Extraction
     document.getElementById('startExtraction').addEventListener('click', () => this.startExtraction());
-    document.getElementById('stopExtraction').addEventListener('click', () => this.stopExtraction());
     document.getElementById('deduplicate').addEventListener('click', () => this.deduplicate());
+    document.getElementById('saveCurrentLead').addEventListener('click', () => this.requestSaveCurrentLead());
+    
+    // Tabs
+    document.getElementById('tabExtracted').addEventListener('click', () => this.handleTabClick('extracted'));
+    document.getElementById('tabSaved').addEventListener('click', () => this.handleTabClick('saved'));
     document.getElementById('maxLeadsInput').addEventListener('change', () => this.handleLimitChange());
     document.getElementById('noLimitInput').addEventListener('change', () => this.handleNoLimitChange());
     document.getElementById('requirePhoneInput').addEventListener('change', () => this.handleRequirePhoneChange());
@@ -100,23 +111,74 @@ class LeadExtractor {
     document.getElementById('addLeadForm').addEventListener('submit', (e) => this.handleAddLead(e));
     document.getElementById('closeEditModal').addEventListener('click', () => this.closeEditModal());
     document.getElementById('editLeadForm').addEventListener('submit', (e) => this.handleEditLead(e));
+    document.getElementById('closeSavedLeadViewModal').addEventListener('click', () => this.closeSavedLeadViewModal());
     document.getElementById('closeWindowBtn').addEventListener('click', () => window.close());
   }
 
   bindRuntimeListeners() {
-    chrome.runtime.onMessage.addListener((message) => {
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message?.action === 'extractionProgress') {
         this.handleExtractionProgress(message);
       } else if (message?.action === 'leadsCleared') {
         this.handleLeadsCleared();
+      } else if (message?.action === 'saveLeadsRequest') {
+        this.handleSaveLeadsRequest(message.leads, sendResponse);
+        return true;
       }
+      return false;
     });
+  }
+
+  async handleSaveLeadsRequest(leadsData, sendResponse) {
+    if (!Array.isArray(leadsData) || leadsData.length === 0) {
+      sendResponse({ saved: false, reason: 'no_data' });
+      return;
+    }
+
+    let savedCount = 0;
+    for (const leadData of leadsData) {
+      const preparedLead = {
+        ...this.sanitizeLeadForStorage(leadData),
+        id: this.generateId(),
+        type: 'saved',
+        contacted: false,
+        contactedAt: null,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        source: leadData.source || 'Manual Save'
+      };
+
+      // Check for duplicate
+      if (!this.isDuplicateLead(preparedLead)) {
+        await Storage.addLead(preparedLead);
+        savedCount++;
+      }
+    }
+
+    if (savedCount > 0) {
+      await this.loadLeads();
+      this.updateCounts();
+      this.setExtractionStatus(`Saved ${savedCount} leads...`);
+      this.handleTabClick('saved'); // Automatically switch to Saved tab to show new leads
+      this.showToast(`Saved ${savedCount} new leads to dashboard!`, 'success');
+      sendResponse({ saved: true, count: savedCount });
+    } else {
+      this.setExtractionStatus('All leads already exist in dashboard');
+      this.showToast('All leads already exist in dashboard', 'info');
+      sendResponse({ saved: false, reason: 'all_duplicates' });
+    }
   }
 
   renderExtractionSettings() {
     document.getElementById('maxLeadsInput').value = this.extractionSettings.limit;
     document.getElementById('noLimitInput').checked = this.extractionSettings.noLimit;
     document.getElementById('requirePhoneInput').checked = this.extractionSettings.requirePhone;
+    // ADDED: Note about requirePhone for Maps
+    const phoneNote = document.getElementById('phoneNote');
+    if (phoneNote) {
+      phoneNote.textContent = 'Note: Disabling "Require Phone" recommended for Google Maps (few listings show phones)';
+      phoneNote.style.display = 'block';
+    }
     document.getElementById('countryCodeInput').value = this.getCountryCodeDigits(this.extractionSettings.countryCode);
     document.getElementById('whatsAppMessageInput').value = this.extractionSettings.whatsAppMessage;
     document.getElementById('maxLeadsInput').disabled = this.extractionSettings.noLimit;
@@ -161,13 +223,31 @@ class LeadExtractor {
     await this.saveExtractionSettings();
   }
 
+  async requestSaveCurrentLead() {
+    try {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tabs[0]?.id) {
+        this.showToast('No active tab found', 'error');
+        return;
+      }
+
+      this.showToast('Requesting lead data from page...', 'info');
+      const response = await chrome.tabs.sendMessage(tabs[0].id, { action: 'saveLeadRequest' });
+      if (response && (response.saved || response.count > 0)) {
+        this.showToast('Lead saved successfully!', 'success');
+      }
+    } catch (error) {
+      console.error('Save lead error:', error);
+      this.showToast('Page not compatible or content script not loaded', 'error');
+    }
+  }
+
   // Lead extraction
   async startExtraction() {
     if (this.isExtracting) return;
 
     this.isExtracting = true;
     this.currentSessionSaved = 0;
-    this.autoExportOnStop = false;
     this.updateExtractionButtons();
     this.showProgress(0);
     this.setExtractionStatus('Starting extraction...');
@@ -213,17 +293,25 @@ class LeadExtractor {
       const finalCount = response?.savedCount ?? this.currentSessionSaved;
       if (finalCount > 0) {
         const statusText = response?.stopped
-          ? `Stopped after saving ${finalCount} leads`
-          : `Extraction completed with ${finalCount} leads`;
+          ? `Stopped after saving ${finalCount} business leads`
+          : `Extraction completed with ${finalCount} business leads`;
         this.setExtractionStatus(statusText);
         if (response?.stopped && this.autoExportOnStop) {
           this.exportCSV();
           this.autoExportOnStop = false;
         }
-        this.showToast(`Extracted ${finalCount} leads`, 'success');
+        this.showToast(`Extracted ${finalCount} business leads`, 'success');
       } else {
-        this.setExtractionStatus('No leads found on this page');
-        this.showToast('No leads found on this page', 'error');
+        // FIXED: Better 0-leads guidance for Maps
+        const tips = [
+          '✓ Make sure Google Maps results are visible',
+          '✓ Check Developer Console (F12) for [EXTRACT] logs',
+          '✓ Uncheck "Phone only" filter (most listings show no phone)',
+          '✓ Scroll down to load more results before extracting',
+          '✓ Try a broader search term on Google Maps'
+        ].join('\\n');
+        this.setExtractionStatus(`No business listings found. Tips:\\n${tips}`);
+        this.showToast('No listings extracted. See Console (F12) → [EXTRACT] logs', 'warning');
       }
     } catch (error) {
       console.error('Extraction error:', error);
@@ -239,25 +327,8 @@ class LeadExtractor {
     }
   }
 
-  async stopExtraction() {
-    if (!this.isExtracting || !this.currentTabId) return;
-
-    this.autoExportOnStop = true;
-    this.setExtractionStatus('Stopping extraction and exporting saved leads...');
-
-    try {
-      await chrome.tabs.sendMessage(this.currentTabId, {
-        action: 'stopExtraction',
-        sessionId: this.activeSessionId
-      });
-    } catch (error) {
-      console.error('Stop extraction error:', error);
-    }
-  }
-
   updateExtractionButtons() {
     document.getElementById('startExtraction').disabled = this.isExtracting;
-    document.getElementById('stopExtraction').disabled = !this.isExtracting;
   }
 
   async getExtractionTab() {
@@ -289,6 +360,7 @@ class LeadExtractor {
       const preparedLead = {
         ...this.sanitizeLeadForStorage(rawLead),
         id: this.generateId(),
+        type: 'extracted',
         contacted: false,
         contactedAt: null,
         createdAt: Date.now(),
@@ -371,8 +443,9 @@ class LeadExtractor {
 
   applyLeadFilters() {
     const searchTerm = this.searchQuery.toLowerCase().trim();
+    const sourceLeads = this.activeTab === 'extracted' ? this.extractedLeads : this.savedLeads;
 
-    const filtered = this.leads.filter((lead) => {
+    const filtered = sourceLeads.filter((lead) => {
       const matchesSearch = !searchTerm || [
         lead.name,
         lead.email,
@@ -405,7 +478,11 @@ class LeadExtractor {
       ? filtered.sort((a, b) => this.getRatingValue(b.rating) - this.getRatingValue(a.rating))
       : filtered;
 
-    this.renderLeads(true);
+    if (this.activeTab === 'extracted') {
+      this.renderLeads(true);
+    } else {
+      this.renderSavedLeads();
+    }
   }
 
   // Lead display
@@ -440,20 +517,25 @@ class LeadExtractor {
         <div class="lead-info">
           <div class="lead-name">${lead.name || 'Unknown'}</div>
           <div class="lead-details">
-            ${lead.phone || lead.website || lead.address || lead.category || lead.company || 'No details'}
+            ${lead.phone ? `<span>📞 ${lead.phone}</span>` : ''}
+            ${lead.website ? `<span>🌐 ${lead.website}</span>` : ''}
+            ${!lead.phone && !lead.website ? 'No contact info' : ''}
           </div>
           <div class="lead-meta">
-            ${lead.contacted ? `Contacted${lead.contactedAt ? ` on ${new Date(lead.contactedAt).toLocaleDateString()}` : ''}` : 'Not contacted yet'}
+            <span class="status-badge ${lead.contacted ? 'contacted' : ''}">
+              ${lead.contacted ? '✓ Contacted' : '○ Not Contacted'}
+            </span>
+            ${lead.source ? `<span class="source">📍 ${lead.source.slice(0, 30)}</span>` : ''}
           </div>
         </div>
         <div class="lead-actions">
           <button type="button" class="lead-action-btn whatsapp" title="Send WhatsApp" data-action="whatsapp" data-id="${lead.id}"
-            ${this.hasWhatsAppNumber(lead) ? '' : 'disabled'}>WA</button>
+            ${this.hasWhatsAppNumber(lead) ? '' : 'disabled'}>💬</button>
           <button type="button" class="lead-action-btn contact ${lead.contacted ? 'active' : ''}" title="Mark contacted" data-action="contact" data-id="${lead.id}">
-            ${lead.contacted ? '✓' : '☐'}
+            ${lead.contacted ? '✓' : '○'}
           </button>
-          <button type="button" class="lead-action-btn edit" title="Edit" data-action="edit" data-id="${lead.id}">✏</button>
-          <button type="button" class="lead-action-btn delete" title="Delete" data-action="delete" data-id="${lead.id}">🗑</button>
+          <button type="button" class="lead-action-btn edit" title="Edit" data-action="edit" data-id="${lead.id}">✏️</button>
+          <button type="button" class="lead-action-btn delete" title="Delete" data-action="delete" data-id="${lead.id}">🗑️</button>
         </div>
       </div>
     `).join('');
@@ -504,7 +586,7 @@ class LeadExtractor {
   updateListStatus() {
     const listStatus = document.getElementById('listStatus');
 
-    if (!this.filteredLeads.length) {
+    if (this.activeTab !== 'extracted' || !this.filteredLeads.length) {
       listStatus.textContent = '';
       return;
     }
@@ -513,6 +595,105 @@ class LeadExtractor {
     listStatus.textContent = hasMore
       ? `Showing ${this.renderedLeadCount} of ${this.filteredLeads.length}`
       : `Showing all ${this.filteredLeads.length}`;
+  }
+
+  // Saved Leads Display
+  renderSavedLeads() {
+    const body = document.getElementById('savedLeadsBody');
+    if (!body) return;
+
+    if (this.filteredLeads.length === 0) {
+      body.innerHTML = `<tr><td class="empty-state">No saved leads matching filters</td></tr>`;
+      return;
+    }
+
+    body.innerHTML = this.filteredLeads.map(lead => `
+      <tr data-id="${lead.id}">
+        <td>${lead.name || 'Unknown Lead'}</td>
+      </tr>
+    `).join('');
+
+    body.querySelectorAll('tr[data-id]').forEach(row => {
+      row.addEventListener('click', () => this.showSavedLeadDetails(row.dataset.id));
+    });
+  }
+
+  showSavedLeadDetails(id) {
+    const lead = this.savedLeads.find(l => l.id === id);
+    if (!lead) return;
+
+    const content = document.getElementById('savedLeadViewContent');
+    content.innerHTML = `
+      <div class="lead-row ${lead.contacted ? 'contacted' : ''}" data-id="${lead.id}" style="border: none; box-shadow: none; transform: none;">
+        <div class="lead-info">
+          <div class="lead-name" style="font-size: 18px;">${lead.name || 'Unknown'}</div>
+          <div class="lead-details" style="white-space: normal;">
+            ${lead.phone ? `<div><strong>Phone:</strong> ${lead.phone}</div>` : ''}
+            ${lead.email ? `<div><strong>Email:</strong> ${lead.email}</div>` : ''}
+            ${lead.website ? `<div><strong>Website:</strong> <a href="${lead.website}" target="_blank">${lead.website}</a></div>` : ''}
+            ${lead.company ? `<div><strong>Company:</strong> ${lead.company}</div>` : ''}
+            ${lead.address ? `<div><strong>Address:</strong> ${lead.address}</div>` : ''}
+            ${lead.category ? `<div><strong>Category:</strong> ${lead.category}</div>` : ''}
+            ${lead.rating ? `<div><strong>Rating:</strong> ⭐ ${lead.rating} (${lead.reviews} reviews)</div>` : ''}
+          </div>
+          <div class="lead-meta" style="margin-top: 12px;">
+            <span class="status-badge ${lead.contacted ? 'contacted' : ''}">
+              ${lead.contacted ? `✓ Contacted on ${new Date(lead.contactedAt).toLocaleDateString()}` : '○ Not Contacted Yet'}
+            </span>
+          </div>
+        </div>
+        <div class="lead-actions" style="opacity: 1; align-self: flex-start;">
+          <button type="button" class="lead-action-btn whatsapp" title="Send WhatsApp" data-action="whatsapp" data-id="${lead.id}"
+            ${this.hasWhatsAppNumber(lead) ? '' : 'disabled'}>💬</button>
+          <button type="button" class="lead-action-btn contact ${lead.contacted ? 'active' : ''}" title="Mark contacted" data-action="contact" data-id="${lead.id}">
+            ${lead.contacted ? '✓' : '○'}
+          </button>
+          <button type="button" class="lead-action-btn edit" title="Edit" data-action="edit" data-id="${lead.id}">✏️</button>
+          <button type="button" class="lead-action-btn delete" title="Delete" data-action="delete" data-id="${lead.id}">🗑️</button>
+        </div>
+      </div>
+    `;
+
+    // Bind actions for this specific row
+    content.querySelector('.lead-actions').addEventListener('click', (e) => {
+      this.handleLeadActionClick(e);
+      // If deleted, close modal
+      const action = e.target.closest('button')?.dataset?.action;
+      if (action === 'delete') {
+        this.closeSavedLeadViewModal();
+      }
+    });
+
+    document.getElementById('savedLeadViewModal').style.display = 'flex';
+  }
+
+  closeSavedLeadViewModal() {
+    document.getElementById('savedLeadViewModal').style.display = 'none';
+  }
+
+  closeModal() {
+    document.getElementById('addLeadModal').style.display = 'none';
+  }
+
+  closeEditModal() {
+    document.getElementById('editLeadModal').style.display = 'none';
+  }
+
+  handleTabClick(tabId) {
+    this.activeTab = tabId;
+    
+    // Update UI
+    document.getElementById('tabExtracted').classList.toggle('active', tabId === 'extracted');
+    document.getElementById('tabSaved').classList.toggle('active', tabId === 'saved');
+    
+    const extractedContainer = document.getElementById('extractedLeadsContainer');
+    const savedContainer = document.getElementById('savedLeadsContainer');
+    
+    extractedContainer.classList.toggle('active', tabId === 'extracted');
+    savedContainer.classList.toggle('active', tabId === 'saved');
+    
+    this.applyLeadFilters();
+    this.updateCounts();
   }
 
   // Lead management
@@ -833,7 +1014,9 @@ class LeadExtractor {
   }
 
   updateCounts() {
-    document.getElementById('leadCount').textContent = `${this.leads.length} leads`;
+    const count = this.activeTab === 'extracted' ? this.extractedLeads.length : this.savedLeads.length;
+    const label = this.activeTab === 'extracted' ? 'extracted leads' : 'saved leads';
+    document.getElementById('leadCount').textContent = `${count} ${label}`;
   }
 
   setExtractionStatus(message) {
