@@ -2,7 +2,13 @@
 
 class LeadExtractor {
   static DEFAULT_COUNTRY_CODE = '+91';
-  static DEFAULT_WHATSAPP_MESSAGE = 'Hi, I found your business details and wanted to connect regarding your services.';
+  static DEFAULT_WHATSAPP_MESSAGE = `Hi [Name], I came across your business [Business Name] on Google.
+
+I noticed that you don’t have a proper website / Android App / automation system yet. You might be missing potential customers online.
+
+I help businesses like yours get more leads using websites,Android App, WhatsApp automation, and simple tools.
+
+Would you be open to a quick 5-minute chat? I can show you how it can help your business.`;
 
   constructor() {
     this.leads = [];
@@ -68,11 +74,11 @@ class LeadExtractor {
   async loadLeads() {
     const storedLeads = await Storage.getAllLeads();
     this.leads = storedLeads.map((lead) => this.normalizeStoredLead(lead));
-    
+
     // Separate leads by type
     this.extractedLeads = this.leads.filter(l => !l.type || l.type === 'extracted');
     this.savedLeads = this.leads.filter(l => l.type === 'saved');
-    
+
     this.applyLeadFilters();
   }
 
@@ -82,7 +88,8 @@ class LeadExtractor {
     document.getElementById('startExtraction').addEventListener('click', () => this.startExtraction());
     document.getElementById('deduplicate').addEventListener('click', () => this.deduplicate());
     document.getElementById('saveCurrentLead').addEventListener('click', () => this.requestSaveCurrentLead());
-    
+    document.getElementById('refreshLeads').addEventListener('click', () => this.refreshData());
+
     // Tabs
     document.getElementById('tabExtracted').addEventListener('click', () => this.handleTabClick('extracted'));
     document.getElementById('tabSaved').addEventListener('click', () => this.handleTabClick('saved'));
@@ -112,7 +119,7 @@ class LeadExtractor {
     document.getElementById('closeEditModal').addEventListener('click', () => this.closeEditModal());
     document.getElementById('editLeadForm').addEventListener('submit', (e) => this.handleEditLead(e));
     document.getElementById('closeSavedLeadViewModal').addEventListener('click', () => this.closeSavedLeadViewModal());
-    document.getElementById('closeWindowBtn').addEventListener('click', () => window.close());
+
   }
 
   bindRuntimeListeners() {
@@ -328,7 +335,25 @@ class LeadExtractor {
   }
 
   updateExtractionButtons() {
-    document.getElementById('startExtraction').disabled = this.isExtracting;
+    const btn = document.getElementById('startExtraction');
+    btn.disabled = this.isExtracting;
+    btn.classList.toggle('is-extracting', this.isExtracting);
+  }
+
+  async refreshData() {
+    const refreshBtn = document.getElementById('refreshLeads');
+    if (refreshBtn) refreshBtn.classList.add('spinning');
+    
+    this.setExtractionStatus('Refreshing leads...');
+    await this.loadLeads();
+    this.updateCounts();
+    this.applyLeadFilters();
+    
+    setTimeout(() => {
+      if (refreshBtn) refreshBtn.classList.remove('spinning');
+      this.setExtractionStatus('Ready');
+      this.showToast('Data refreshed', 'success');
+    }, 600);
   }
 
   async getExtractionTab() {
@@ -530,7 +555,9 @@ class LeadExtractor {
         </div>
         <div class="lead-actions">
           <button type="button" class="lead-action-btn whatsapp" title="Send WhatsApp" data-action="whatsapp" data-id="${lead.id}"
-            ${this.hasWhatsAppNumber(lead) ? '' : 'disabled'}>💬</button>
+            ${this.hasWhatsAppNumber(lead) ? '' : 'disabled'}>
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+          </button>
           <button type="button" class="lead-action-btn contact ${lead.contacted ? 'active' : ''}" title="Mark contacted" data-action="contact" data-id="${lead.id}">
             ${lead.contacted ? '✓' : '○'}
           </button>
@@ -644,7 +671,9 @@ class LeadExtractor {
         </div>
         <div class="lead-actions" style="opacity: 1; align-self: flex-start;">
           <button type="button" class="lead-action-btn whatsapp" title="Send WhatsApp" data-action="whatsapp" data-id="${lead.id}"
-            ${this.hasWhatsAppNumber(lead) ? '' : 'disabled'}>💬</button>
+            ${this.hasWhatsAppNumber(lead) ? '' : 'disabled'}>
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+          </button>
           <button type="button" class="lead-action-btn contact ${lead.contacted ? 'active' : ''}" title="Mark contacted" data-action="contact" data-id="${lead.id}">
             ${lead.contacted ? '✓' : '○'}
           </button>
@@ -681,17 +710,17 @@ class LeadExtractor {
 
   handleTabClick(tabId) {
     this.activeTab = tabId;
-    
+
     // Update UI
     document.getElementById('tabExtracted').classList.toggle('active', tabId === 'extracted');
     document.getElementById('tabSaved').classList.toggle('active', tabId === 'saved');
-    
+
     const extractedContainer = document.getElementById('extractedLeadsContainer');
     const savedContainer = document.getElementById('savedLeadsContainer');
-    
+
     extractedContainer.classList.toggle('active', tabId === 'extracted');
     savedContainer.classList.toggle('active', tabId === 'saved');
-    
+
     this.applyLeadFilters();
     this.updateCounts();
   }
@@ -898,27 +927,42 @@ class LeadExtractor {
   }
 
   formatPhoneForWhatsApp(phone) {
-    const digits = (phone || '').replace(/\D/g, '');
-    if (!digits) {
-      return '';
+    if (!phone) return '';
+    
+    // 1. Get all digits
+    let digits = String(phone).replace(/\D/g, '');
+    if (!digits) return '';
+
+    // 2. Get country code digits from settings
+    const countryCode = (this.extractionSettings?.countryCode || '').replace(/\D/g, '');
+    
+    // 3. Handle cases where the number already includes the country code
+    if (countryCode && digits.startsWith(countryCode)) {
+      // Check for a leading zero after the country code (e.g. 91-0-1234567890)
+      let potentialLocal = digits.substring(countryCode.length);
+      
+      // ONLY strip if the remaining number is at least 10 digits (standard mobile length)
+      // OR if it explicitly starts with a 0 (international format mistake)
+      if (potentialLocal.startsWith('0') || potentialLocal.length >= 10) {
+        potentialLocal = potentialLocal.replace(/^0+/, '');
+        return countryCode + potentialLocal;
+      }
     }
 
-    const countryCodeDigits = this.extractionSettings?.countryCode?.replace(/\D/g, '') || '';
-    if (!countryCodeDigits) {
-      return digits;
+    // 4. If it doesn't start with CC, treat as local number
+    // Remove all leading zeros (e.g. 0091... or 0123...)
+    const localPart = digits.replace(/^0+/, '');
+    
+    // If a country code is set, prepend it
+    if (countryCode) {
+      // Special case: if the number now starts with CC after removing leading zeros
+      if (localPart.startsWith(countryCode) && localPart.length > countryCode.length) {
+        return localPart;
+      }
+      return countryCode + localPart;
     }
 
-    const trimmedPhone = (phone || '').trim();
-    if (trimmedPhone.startsWith('+')) {
-      return digits;
-    }
-
-    if (digits.startsWith(countryCodeDigits) && digits.length > Math.max(countryCodeDigits.length + 6, 10)) {
-      return digits;
-    }
-
-    const localDigits = digits.replace(/^0+/, '') || digits;
-    return `${countryCodeDigits}${localDigits}`;
+    return localPart;
   }
 
   hasWhatsAppNumber(lead) {
@@ -931,8 +975,23 @@ class LeadExtractor {
       return '';
     }
 
-    const text = encodeURIComponent(this.getWhatsAppMessage());
+    const rawMessage = this.getWhatsAppMessage();
+    const personalizedMessage = this.substitutePlaceholders(rawMessage, lead);
+    const text = encodeURIComponent(personalizedMessage);
     return `https://wa.me/${phone}?text=${text}`;
+  }
+
+  substitutePlaceholders(message, lead) {
+    if (!message) return '';
+
+    return message
+      .replace(/\[Name\]/gi, lead.name || '')
+      .replace(/\[Business Name\]/gi, lead.company || lead.name || '')
+      .replace(/\[Address\]/gi, lead.address || '')
+      .replace(/\[Website\]/gi, lead.website || '')
+      .replace(/\[Phone\]/gi, lead.phone || '')
+      .replace(/\[Category\]/gi, lead.category || '')
+      .replace(/\[Rating\]/gi, lead.rating || '');
   }
 
   addWorksheetHyperlinks(worksheet, data, columnIndex, label) {
@@ -969,24 +1028,33 @@ class LeadExtractor {
     }
 
     try {
-      await chrome.tabs.create({ url, active: true });
+      this.showToast('Opening WhatsApp and preparing to send...', 'info');
+      chrome.runtime.sendMessage({ action: 'openWhatsAppAndSend', url }, (response) => {
+        if (response?.error) {
+          console.error('WhatsApp auto-send error:', response.error);
+          this.showToast('WhatsApp opened, but could not auto-send message', 'warning');
+        } else {
+          this.showToast('WhatsApp message sent!', 'success');
+          this.toggleContacted(id, true); // Automatically mark as contacted
+        }
+      });
     } catch (error) {
       window.open(url, '_blank', 'noopener');
+      this.showToast('WhatsApp link opened', 'success');
     }
-
-    this.showToast('WhatsApp link opened', 'success');
   }
 
-  async toggleContacted(id) {
+  async toggleContacted(id, forceValue = null) {
     const lead = this.leads.find((item) => item.id === id);
     if (!lead) {
       return;
     }
 
+    const newValue = forceValue !== null ? forceValue : !lead.contacted;
     const updatedLead = {
       ...lead,
-      contacted: !lead.contacted,
-      contactedAt: !lead.contacted ? Date.now() : null,
+      contacted: newValue,
+      contactedAt: newValue ? Date.now() : null,
       updatedAt: Date.now()
     };
 

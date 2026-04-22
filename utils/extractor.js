@@ -5,7 +5,8 @@ class Extractor {
   static EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
   
   // Phone patterns (various formats)
-  static PHONE_REGEX = /(?:\+?1?[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g;
+  // Phone patterns (broadly matches international formats)
+  static PHONE_REGEX = /(?:\+?\d{1,4}[\s\-.()]{0,3})?(?:\d[\s\-.()]{0,3}){9,15}/g;
   
   // Website pattern
   static WEBSITE_REGEX = /https?:\/\/(?:www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_\+.~#?&//=]*)/g;

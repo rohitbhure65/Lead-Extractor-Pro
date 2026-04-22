@@ -64,7 +64,9 @@
 
           <div class="action-group">
             <button class="btn-primary" id="startExtraction">
-              <span class="icon">▶</span> Start Scan
+              <span class="icon btn-icon-start">▶</span>
+              <div class="spinner" id="extractionSpinner"></div>
+              <span class="btn-text">Start Scan</span>
             </button>
             <button class="btn-outline" id="deduplicate">
               <span class="icon">⟳</span> Clean Duplicates
@@ -161,7 +163,9 @@
       </footer>
     </main>
 
-    <button class="floating-close" id="closeWindowBtn">&times;</button>
+    <button class="floating-refresh btn-icon-only" id="refreshLeads" title="Refresh leads">
+      <span class="icon">⟳</span>
+    </button>
   </div>
 
   <!-- Modals -->
