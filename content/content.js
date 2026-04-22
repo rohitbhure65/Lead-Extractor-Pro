@@ -564,10 +564,8 @@ function extractGoogleMapsCardLead(card) {
   const reviewsMatch = text.match(/\(([\d,]+)\)/);
 
   // Extract phone with better regex
-  // IMPROVED: Better international phone regex for India/etc.
-  const phoneMatch = text.match(/(\+?\d[\s\-\(\)\.]?)?\(?(\d{3})\)?[\s\-\(\)\.]?(\d{3})[\s\-\(\)\.]?(\d{4})/) ||
-    text.match(/(\+91[\s\-]?)?\d{10}/) ||
-    text.match(/(?:\+?\d[\d\s().-]{7,}\d)/);
+  // IMPROVED: More universal regex that captures 10+ digits with various separators
+  const phoneMatch = text.match(/(?:\+?\d{1,4}[\s\-.()]{0,3})?(?:\d[\s\-.()]{0,3}){9,15}/);
 
   // Extract website
   const website = card.querySelector('a[href^="http"]:not([href*="google.com"])')?.href || '';
