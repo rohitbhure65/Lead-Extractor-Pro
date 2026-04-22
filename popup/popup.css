@@ -2,28 +2,33 @@
 
 :root {
   /* Colors - Modern Premium Palette */
-  --primary: #6366f1; /* Indigo 500 */
+  --primary: #6366f1;
+  /* Indigo 500 */
   --primary-dark: #4f46e5;
   --primary-light: #e0e7ff;
-  --secondary: #10b981; /* Emerald 500 */
+  --secondary: #10b981;
+  /* Emerald 500 */
   --secondary-dark: #059669;
-  --danger: #f43f5e; /* Rose 500 */
+  --danger: #f43f5e;
+  /* Rose 500 */
   --danger-dark: #e11d48;
-  --warning: #f59e0b; /* Amber 500 */
-  
+  --warning: #f59e0b;
+  /* Amber 500 */
+
   --bg-app: #f8fafc;
   --bg-card: #ffffff;
-  --bg-sidebar: #1e293b; /* Slate 800 */
-  
+  --bg-sidebar: #1e293b;
+  /* Slate 800 */
+
   --text-main: #1e293b;
   --text-muted: #64748b;
   --text-on-dark: #f1f5f9;
-  
+
   --border: #e2e8f0;
   --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
   --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
   --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
-  
+
   --radius: 8px;
   --radius-lg: 12px;
   --font-main: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
@@ -233,11 +238,11 @@ body {
   transition: 0.3s;
 }
 
-.toggle input:checked + .slider {
+.toggle input:checked+.slider {
   background: var(--primary);
 }
 
-.toggle input:checked + .slider::after {
+.toggle input:checked+.slider::after {
   left: 19px;
 }
 
@@ -430,6 +435,7 @@ body {
 }
 
 .lead-info-badge {
+  margin-left: 50px;
   background: var(--bg-app);
   padding: 6px 12px;
   border-radius: 20px;
@@ -440,6 +446,7 @@ body {
 }
 
 .content-body {
+  width: 600px;
   flex: 1;
   overflow: hidden;
   position: relative;
@@ -509,6 +516,7 @@ body {
 
 .leads-list {
   flex: 1;
+  overflow-x: hidden;
   overflow-y: auto;
   padding: 16px 24px;
 }
@@ -548,6 +556,7 @@ body {
 
 .lead-info {
   flex: 1;
+  min-width: 0;
 }
 
 .lead-name {
@@ -616,18 +625,28 @@ body {
   transform: scale(1.1);
 }
 
-.lead-action-btn.whatsapp { 
-  color: #25d366; /* Official WhatsApp Green */
+.lead-action-btn.whatsapp {
+  color: #25d366;
+  /* Official WhatsApp Green */
   border-color: #25d366;
 }
+
 .lead-action-btn.whatsapp:hover {
   background-color: #25d366;
   color: white;
 }
 
-.lead-action-btn.contact { color: var(--primary); }
-.lead-action-btn.edit { color: var(--warning); }
-.lead-action-btn.delete { color: var(--danger); }
+.lead-action-btn.contact {
+  color: var(--primary);
+}
+
+.lead-action-btn.edit {
+  color: var(--warning);
+}
+
+.lead-action-btn.delete {
+  color: var(--danger);
+}
 
 .list-footer {
   padding: 12px 24px;
@@ -722,6 +741,7 @@ body {
 }
 
 .btn-danger-link {
+  border: 1px solid var(--danger);
   margin-left: auto;
   background: transparent;
   border: none;
@@ -757,8 +777,13 @@ body {
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 .modal-card {
@@ -771,8 +796,15 @@ body {
 }
 
 @keyframes slideUp {
-  from { transform: translateY(20px); opacity: 0; }
-  to { transform: translateY(0); opacity: 1; }
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
 }
 
 .modal-card.wide {
@@ -903,8 +935,13 @@ body {
   bottom: 100px;
 }
 
-.toast.success { border: 1px solid var(--secondary); }
-.toast.error { border: 1px solid var(--danger); }
+.toast.success {
+  border: 1px solid var(--secondary);
+}
+
+.toast.error {
+  border: 1px solid var(--danger);
+}
 
 /* Empty States */
 .empty-state {
@@ -935,7 +972,9 @@ body {
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* Loading State for Button */

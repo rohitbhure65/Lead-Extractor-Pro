@@ -343,12 +343,12 @@ Would you be open to a quick 5-minute chat? I can show you how it can help your 
   async refreshData() {
     const refreshBtn = document.getElementById('refreshLeads');
     if (refreshBtn) refreshBtn.classList.add('spinning');
-    
+
     this.setExtractionStatus('Refreshing leads...');
     await this.loadLeads();
     this.updateCounts();
     this.applyLeadFilters();
-    
+
     setTimeout(() => {
       if (refreshBtn) refreshBtn.classList.remove('spinning');
       this.setExtractionStatus('Ready');
@@ -542,8 +542,12 @@ Would you be open to a quick 5-minute chat? I can show you how it can help your 
         <div class="lead-info">
           <div class="lead-name">${lead.name || 'Unknown'}</div>
           <div class="lead-details">
-            ${lead.phone ? `<span>📞 ${lead.phone}</span>` : ''}
-            ${lead.website ? `<span>🌐 ${lead.website}</span>` : ''}
+            ${lead.phone ? `<span style="
+    width: 250px;
+">📞 ${lead.phone}</span>` : ''}
+            ${lead.website ? `<span style="
+    width: 250px;
+">🌐 ${lead.website}</span>` : ''}
             ${!lead.phone && !lead.website ? 'No contact info' : ''}
           </div>
           <div class="lead-meta">
@@ -561,7 +565,7 @@ Would you be open to a quick 5-minute chat? I can show you how it can help your 
           <button type="button" class="lead-action-btn contact ${lead.contacted ? 'active' : ''}" title="Mark contacted" data-action="contact" data-id="${lead.id}">
             ${lead.contacted ? '✓' : '○'}
           </button>
-          <button type="button" class="lead-action-btn edit" title="Edit" data-action="edit" data-id="${lead.id}">✏️</button>
+
           <button type="button" class="lead-action-btn delete" title="Delete" data-action="delete" data-id="${lead.id}">🗑️</button>
         </div>
       </div>
@@ -928,19 +932,19 @@ Would you be open to a quick 5-minute chat? I can show you how it can help your 
 
   formatPhoneForWhatsApp(phone) {
     if (!phone) return '';
-    
+
     // 1. Get all digits
     let digits = String(phone).replace(/\D/g, '');
     if (!digits) return '';
 
     // 2. Get country code digits from settings
     const countryCode = (this.extractionSettings?.countryCode || '').replace(/\D/g, '');
-    
+
     // 3. Handle cases where the number already includes the country code
     if (countryCode && digits.startsWith(countryCode)) {
       // Check for a leading zero after the country code (e.g. 91-0-1234567890)
       let potentialLocal = digits.substring(countryCode.length);
-      
+
       // ONLY strip if the remaining number is at least 10 digits (standard mobile length)
       // OR if it explicitly starts with a 0 (international format mistake)
       if (potentialLocal.startsWith('0') || potentialLocal.length >= 10) {
@@ -952,7 +956,7 @@ Would you be open to a quick 5-minute chat? I can show you how it can help your 
     // 4. If it doesn't start with CC, treat as local number
     // Remove all leading zeros (e.g. 0091... or 0123...)
     const localPart = digits.replace(/^0+/, '');
-    
+
     // If a country code is set, prepend it
     if (countryCode) {
       // Special case: if the number now starts with CC after removing leading zeros
