@@ -23,22 +23,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status !== 'loading' || !tab.active || !tab.url || tab.url.startsWith('chrome-extension://')) {
-    return;
-  }
-
-  // FIXED: Don't clear leads on Google Maps pages or refreshes - persist across navigation
-  if (tab.url.includes('/maps')) {
-    console.log('[PERSISTENCE] Skipping lead clear on Maps page:', tab.url);
-    return;
-  }
-
-  // Clear only on non-Maps page navigation (user intent to start fresh)
-  clearLeadDatabase()
-    .then(() => chrome.runtime.sendMessage({ action: 'leadsCleared', reason: 'page-change', tabId }).catch(() => { }))
-    .catch((error) => console.error('Failed to clear leads on page change:', error));
-});
 
 // Extract leads from a specific URL
 async function extractFromUrl(url, keywords = []) {
@@ -79,38 +63,6 @@ chrome.runtime.onInstalled.addListener((details) => {
   }
 });
 
-function clearLeadDatabase() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open('LeadExtractorDB', 1);
-
-    request.onerror = () => reject(request.error);
-    request.onupgradeneeded = (event) => {
-      const db = event.target.result;
-      if (!db.objectStoreNames.contains('leads')) {
-        db.createObjectStore('leads', { keyPath: 'id' });
-      }
-    };
-    request.onsuccess = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains('leads')) {
-        db.close();
-        resolve();
-        return;
-      }
-
-      const transaction = db.transaction(['leads'], 'readwrite');
-      const store = transaction.objectStore('leads');
-      const clearRequest = store.clear();
-
-      clearRequest.onerror = () => reject(clearRequest.error);
-      transaction.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      transaction.onerror = () => reject(transaction.error);
-    };
-  });
-}
 
 async function openWhatsAppAndSend(url) {
   if (!url) {
