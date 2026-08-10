@@ -1,138 +1,458 @@
-// Lead Extractor Pro - Popup Script
+// Lead Extractor Pro – Popup Script (v2)
+// Manages UI, state sync with background, WhatsApp templates, lead CRUD
 
+'use strict';
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+const DEFAULT_COUNTRY_CODE = '+91';
+const DEFAULT_TEMPLATE = {
+  id: 'tpl_default',
+  name: 'General Pitch',
+  body: `Hi {{name}}, I came across your business {{company}} on Google.
+
+I noticed that you don't have a proper website / Android App / automation system yet. You might be missing potential customers online.
+
+I help businesses like yours get more leads using websites, Android App, WhatsApp automation, and simple tools.
+
+Would you be open to a quick 5-minute chat? I can show you how it can help your business.`,
+  createdAt: Date.now()
+};
+
+// ── App Class ─────────────────────────────────────────────────────────────────
 class LeadExtractor {
-  static DEFAULT_COUNTRY_CODE = '+91';
-  static DEFAULT_WHATSAPP_MESSAGE = `Hi [Name], I came across your business [Business Name] on Google.
-
-I noticed that you don’t have a proper website / Android App / automation system yet. You might be missing potential customers online.
-
-I help businesses like yours get more leads using websites,Android App, WhatsApp automation, and simple tools.
-
-Would you be open to a quick 5-minute chat? I can show you how it can help your business.`;
-
   constructor() {
+    // Lead collections (in-memory, mirrored from IndexedDB)
     this.leads = [];
     this.extractedLeads = [];
     this.savedLeads = [];
     this.filteredLeads = [];
-    this.activeTab = 'extracted'; // 'extracted' or 'saved'
+
+    // UI state
+    this.activeTab = 'extracted';
+    this.searchQuery = '';
+    this.savedSearchQuery = '';
+    this.typeFilter = 'all';
     this.renderedLeadCount = 0;
     this.renderBatchSize = 25;
+    this.activeSidebarPanel = 'extractPanel';
+
+    // Extraction state (mirrors background)
     this.isExtracting = false;
     this.activeSessionId = null;
     this.currentTabId = null;
     this.currentSessionSaved = 0;
-    this.searchQuery = '';
-    this.typeFilter = 'all';
+    this.extractionStartTime = null;
+    this.elapsedTimer = null;
+
+    // Settings
+    this.extractionSettings = null;
+
+    // Templates
+    this.templates = [];
+    this.defaultTemplateId = null;
+    this.editingTemplateId = null;
+
+    // Confirm dialog promise resolver
+    this._confirmResolve = null;
 
     this.init();
   }
 
+  // ── Initialization ────────────────────────────────────────────────────────
   async init() {
-    await this.loadLeads();
-    await this.loadExtractionSettings();
-    this.bindEvents();
-    this.bindRuntimeListeners();
-    this.renderVersion();
-    this.updateCounts();
-    this.renderExtractionSettings();
+    try {
+      await this.loadSettings();
+      await this.loadLeads();
+      await this.loadTemplates();
+      this.bindEvents();
+      this.bindRuntimeListeners();
+      this.renderVersion();
+      this.renderAll();
+      // Re-hydrate extraction state from background
+      await this.syncExtractionState();
+    } catch (err) {
+      console.error('[Popup] Init error:', err);
+      this.showToast('Extension error on init', 'error');
+    }
   }
 
-  // Storage methods
-  async loadExtractionSettings() {
+  // ── Settings ──────────────────────────────────────────────────────────────
+  async loadSettings() {
     const saved = await Storage.get('extractionSettings');
     this.extractionSettings = {
       limit: saved?.limit || 100,
-      noLimit: Boolean(saved?.noLimit) || true,
-      requirePhone: Boolean(saved?.requirePhone) || true, // Default ON as requested
-      countryCode: this.normalizeCountryCode(saved?.countryCode || LeadExtractor.DEFAULT_COUNTRY_CODE),
-      whatsAppMessage: saved?.whatsAppMessage?.trim() || LeadExtractor.DEFAULT_WHATSAPP_MESSAGE
+      noLimit: saved?.noLimit !== undefined ? Boolean(saved.noLimit) : true,
+      requirePhone: saved?.requirePhone !== undefined ? Boolean(saved.requirePhone) : true,
+      requireWebsite: saved?.requireWebsite !== undefined ? Boolean(saved.requireWebsite) : false,
+      requireEmail: saved?.requireEmail !== undefined ? Boolean(saved.requireEmail) : false,
+      countryCode: this.normalizeCountryCode(saved?.countryCode || DEFAULT_COUNTRY_CODE)
     };
+    this.renderSettings();
   }
 
-  async saveExtractionSettings() {
+  async saveSettings() {
     const limitInput = document.getElementById('maxLeadsInput');
     const noLimitInput = document.getElementById('noLimitInput');
     const countryCodeInput = document.getElementById('countryCodeInput');
     const parsedLimit = parseInt(limitInput.value, 10);
-    const countryCodeDigits = this.getCountryCodeDigits(countryCodeInput.value);
-    const countryCode = this.normalizeCountryCode(countryCodeDigits || LeadExtractor.DEFAULT_COUNTRY_CODE);
-
+    const ccDigits = this.getCountryCodeDigits(countryCodeInput.value);
+    const countryCode = this.normalizeCountryCode(ccDigits || DEFAULT_COUNTRY_CODE);
     countryCodeInput.value = this.getCountryCodeDigits(countryCode);
 
     this.extractionSettings = {
       limit: Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 100,
       noLimit: noLimitInput.checked,
       requirePhone: document.getElementById('requirePhoneInput').checked,
-      countryCode,
-      whatsAppMessage: this.getWhatsAppMessage()
+      requireWebsite: document.getElementById('requireWebsiteInput').checked,
+      requireEmail: document.getElementById('requireEmailInput').checked,
+      countryCode
     };
 
     await Storage.set('extractionSettings', this.extractionSettings);
   }
 
-  async loadLeads() {
-    const storedLeads = await Storage.getAllLeads();
-    this.leads = storedLeads.map((lead) => this.normalizeStoredLead(lead));
+  renderSettings() {
+    const s = this.extractionSettings;
+    document.getElementById('maxLeadsInput').value = s.limit;
+    document.getElementById('noLimitInput').checked = s.noLimit;
+    document.getElementById('requirePhoneInput').checked = s.requirePhone;
+    document.getElementById('requireWebsiteInput').checked = s.requireWebsite;
+    document.getElementById('requireEmailInput').checked = s.requireEmail;
+    document.getElementById('countryCodeInput').value = this.getCountryCodeDigits(s.countryCode);
+    document.getElementById('maxLeadsInput').disabled = s.noLimit;
+    const phoneNote = document.getElementById('phoneNote');
+    if (phoneNote) {
+      phoneNote.textContent = 'Tip: Disable "Phone Only" for Google Maps – most listings don\'t show phones.';
+    }
+  }
 
-    // Separate leads by type
+  renderVersion() {
+    const badge = document.getElementById('versionBadge');
+    if (badge) badge.textContent = `v${chrome.runtime.getManifest().version}`;
+  }
+
+  // ── Storage / Leads ───────────────────────────────────────────────────────
+  async loadLeads() {
+    const stored = await Storage.getAllLeads();
+    this.leads = stored.map(l => this.normalizeStoredLead(l));
     this.extractedLeads = this.leads.filter(l => !l.type || l.type === 'extracted');
     this.savedLeads = this.leads.filter(l => l.type === 'saved');
-
-    this.applyLeadFilters();
+    this.applyFilters();
+    this.updateBadges();
   }
 
-  // Event binding
-  bindEvents() {
-    // Extraction
-    document.getElementById('startExtraction').addEventListener('click', () => this.startExtraction());
-    document.getElementById('deduplicate').addEventListener('click', () => this.deduplicate());
-    document.getElementById('saveCurrentLead').addEventListener('click', () => this.requestSaveCurrentLead());
-    document.getElementById('refreshLeads').addEventListener('click', () => this.refreshData());
+  // ── Templates ─────────────────────────────────────────────────────────────
+  async loadTemplates() {
+    this.templates = await Storage.getTemplates();
+    this.defaultTemplateId = await Storage.getDefaultTemplateId();
 
-    // Tabs
-    document.getElementById('tabExtracted').addEventListener('click', () => this.handleTabClick('extracted'));
-    document.getElementById('tabSaved').addEventListener('click', () => this.handleTabClick('saved'));
-    document.getElementById('maxLeadsInput').addEventListener('change', () => this.handleLimitChange());
-    document.getElementById('noLimitInput').addEventListener('change', () => this.handleNoLimitChange());
-    document.getElementById('requirePhoneInput').addEventListener('change', () => this.handleRequirePhoneChange());
-    document.getElementById('countryCodeInput').addEventListener('input', (e) => this.handleCountryCodeInput(e));
-    document.getElementById('countryCodeInput').addEventListener('change', () => this.handleCountryCodeChange());
-    document.getElementById('countryCodeInput').addEventListener('blur', () => this.handleCountryCodeChange());
-    document.getElementById('whatsAppMessageInput').addEventListener('change', () => this.handleWhatsAppMessageChange());
-    document.getElementById('whatsAppMessageInput').addEventListener('blur', () => this.handleWhatsAppMessageChange());
+    // Seed default template on first install
+    if (this.templates.length === 0) {
+      await Storage.addTemplate(DEFAULT_TEMPLATE);
+      this.templates = [DEFAULT_TEMPLATE];
+      this.defaultTemplateId = DEFAULT_TEMPLATE.id;
+    }
 
-    // Search & Filter
-    document.getElementById('searchInput').addEventListener('input', (e) => this.filterLeads(e.target.value));
-    document.getElementById('filterSelect').addEventListener('change', (e) => this.filterByType(e.target.value));
-    document.getElementById('leadsList').addEventListener('scroll', () => this.handleLeadListScroll());
-    document.getElementById('leadsList').addEventListener('click', (e) => this.handleLeadActionClick(e));
-
-    // Export
-    document.getElementById('exportCSV').addEventListener('click', () => this.exportCSV());
-    document.getElementById('exportExcel').addEventListener('click', () => this.exportExcel());
-    document.getElementById('clearAll').addEventListener('click', () => this.clearAll());
-
-    // Modals
-    document.getElementById('closeModal').addEventListener('click', () => this.closeModal());
-    document.getElementById('addLeadForm').addEventListener('submit', (e) => this.handleAddLead(e));
-    document.getElementById('closeEditModal').addEventListener('click', () => this.closeEditModal());
-    document.getElementById('editLeadForm').addEventListener('submit', (e) => this.handleEditLead(e));
-    document.getElementById('closeSavedLeadViewModal').addEventListener('click', () => this.closeSavedLeadViewModal());
-
+    // Set textarea to current default template
+    this.loadTemplateIntoTextarea(this.defaultTemplateId);
+    this.renderTemplates();
+    this.renderQuickSelect();
   }
 
+  getSelectedTemplate() {
+    const id = this.defaultTemplateId;
+    const tpl = this.templates.find(t => t.id === id) || this.templates[0] || DEFAULT_TEMPLATE;
+    // Use the live textarea content as the message body (user may have edited it)
+    const textarea = document.getElementById('whatsAppMessageInput');
+    if (textarea) {
+      return { ...tpl, body: textarea.value.trim() || tpl.body };
+    }
+    return tpl;
+  }
+
+  loadTemplateIntoTextarea(templateId) {
+    const tpl = this.templates.find(t => t.id === templateId) || this.templates[0];
+    const textarea = document.getElementById('whatsAppMessageInput');
+    if (textarea && tpl) textarea.value = tpl.body;
+  }
+
+  renderQuickSelect() {
+    const sel = document.getElementById('templateQuickSelect');
+    if (!sel) return;
+    sel.innerHTML = this.templates.map(t =>
+      `<option value="${t.id}" ${t.id === this.defaultTemplateId ? 'selected' : ''}>${this.escapeHtml(t.name)}</option>`
+    ).join('');
+  }
+
+  renderTemplates() {
+    const list = document.getElementById('templatesList');
+    const empty = document.getElementById('templatesEmpty');
+    if (!list) return;
+
+    if (this.templates.length === 0) {
+      list.innerHTML = '';
+      empty?.classList.remove('hidden');
+      return;
+    }
+
+    empty?.classList.add('hidden');
+    list.innerHTML = this.templates.map(t => `
+      <div class="template-item ${t.id === this.defaultTemplateId ? 'is-default' : ''}" data-id="${t.id}">
+        <div class="template-item-info">
+          <span class="template-item-name">${this.escapeHtml(t.name)}</span>
+          ${t.id === this.defaultTemplateId ? '<span class="default-badge">Default</span>' : ''}
+        </div>
+        <div class="template-item-actions">
+          ${t.id !== this.defaultTemplateId ? `<button class="tpl-btn set-default" data-id="${t.id}" title="Set as default">★</button>` : ''}
+          <button class="tpl-btn edit" data-id="${t.id}" title="Edit">✏️</button>
+          <button class="tpl-btn delete" data-id="${t.id}" title="Delete">🗑️</button>
+        </div>
+      </div>
+    `).join('');
+
+    list.querySelectorAll('button.set-default').forEach(btn => {
+      btn.addEventListener('click', () => this.setDefaultTemplate(btn.dataset.id));
+    });
+    list.querySelectorAll('button.edit').forEach(btn => {
+      btn.addEventListener('click', () => this.openTemplateEditor(btn.dataset.id));
+    });
+    list.querySelectorAll('button.delete').forEach(btn => {
+      btn.addEventListener('click', () => this.deleteTemplate(btn.dataset.id));
+    });
+  }
+
+  openTemplateEditor(id = null) {
+    const editor = document.getElementById('templateEditor');
+    const title = document.getElementById('editorTitle');
+    const nameInput = document.getElementById('templateNameInput');
+    const bodyInput = document.getElementById('templateBodyInput');
+
+    this.editingTemplateId = id;
+
+    if (id) {
+      const tpl = this.templates.find(t => t.id === id);
+      if (!tpl) return;
+      title.textContent = 'Edit Template';
+      nameInput.value = tpl.name;
+      bodyInput.value = tpl.body;
+    } else {
+      title.textContent = 'New Template';
+      nameInput.value = '';
+      bodyInput.value = '';
+    }
+
+    editor.classList.remove('hidden');
+    nameInput.focus();
+  }
+
+  closeTemplateEditor() {
+    document.getElementById('templateEditor')?.classList.add('hidden');
+    this.editingTemplateId = null;
+  }
+
+  async saveTemplate() {
+    const name = document.getElementById('templateNameInput').value.trim();
+    const body = document.getElementById('templateBodyInput').value.trim();
+
+    if (!name) { this.showToast('Template name is required', 'error'); return; }
+    if (!body) { this.showToast('Template message is required', 'error'); return; }
+
+    if (this.editingTemplateId) {
+      const updated = {
+        ...this.templates.find(t => t.id === this.editingTemplateId),
+        name,
+        body,
+        updatedAt: Date.now()
+      };
+      await Storage.updateTemplate(updated);
+      this.showToast('Template updated', 'success');
+    } else {
+      const newTpl = { id: `tpl_${Date.now()}`, name, body, createdAt: Date.now() };
+      await Storage.addTemplate(newTpl);
+      this.showToast('Template created', 'success');
+    }
+
+    await this.loadTemplates();
+    this.closeTemplateEditor();
+  }
+
+  // Called when user edits the in-sidebar WhatsApp textarea
+  async onWhatsAppMessageChange() {
+    const textarea = document.getElementById('whatsAppMessageInput');
+    if (!textarea) return;
+    const body = textarea.value.trim();
+    if (!body) return;
+    // Update the active template body in storage
+    const activeTpl = this.templates.find(t => t.id === this.defaultTemplateId);
+    if (activeTpl) {
+      const updated = { ...activeTpl, body, updatedAt: Date.now() };
+      await Storage.updateTemplate(updated);
+      this.templates = this.templates.map(t => t.id === activeTpl.id ? updated : t);
+    }
+  }
+
+  async setDefaultTemplate(id) {
+    this.defaultTemplateId = id;
+    await Storage.setDefaultTemplateId(id);
+    this.loadTemplateIntoTextarea(id);
+    this.renderTemplates();
+    this.renderQuickSelect();
+    this.showToast('Default template updated', 'success');
+  }
+
+  async deleteTemplate(id) {
+    if (this.templates.length === 1) {
+      this.showToast('Cannot delete the only template', 'error');
+      return;
+    }
+
+    const confirmed = await this.confirm('Delete Template', 'Are you sure you want to delete this template?');
+    if (!confirmed) return;
+
+    await Storage.deleteTemplate(id);
+    await this.loadTemplates();
+    this.showToast('Template deleted', 'success');
+  }
+
+  insertVar(variable) {
+    // Insert into whichever textarea is focused, else the main one
+    const focused = document.activeElement;
+    const ta = (focused && focused.tagName === 'TEXTAREA') ? focused : document.getElementById('whatsAppMessageInput');
+    if (!ta) return;
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    const before = ta.value.substring(0, start);
+    const after = ta.value.substring(end);
+    ta.value = before + variable + after;
+    ta.selectionStart = ta.selectionEnd = start + variable.length;
+    ta.focus();
+  }
+
+  // ── Background State Sync ─────────────────────────────────────────────────
+  async syncExtractionState() {
+    try {
+      const response = await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({ action: 'getExtractionState' }, (resp) => {
+          if (chrome.runtime.lastError) reject(chrome.runtime.lastError);
+          else resolve(resp);
+        });
+      });
+
+      if (response?.session) {
+        this.applySessionState(response.session);
+      }
+    } catch (err) {
+      console.warn('[Popup] Could not fetch session state from background:', err.message);
+    }
+  }
+
+  applySessionState(session) {
+    this.isExtracting = session.isExtracting;
+    this.activeSessionId = session.sessionId;
+    this.extractionStartTime = session.startTime || null;
+
+    // Update UI
+    this.showProgress(session.percent || 0);
+    if (!session.isExtracting && !session.completed) {
+      this.hideProgress();
+    }
+    this.setExtractionStatus(session.statusText || 'Ready to scan');
+    this.updateLiveStats({
+      totalFound: session.totalFound || 0,
+      totalSaved: session.totalSaved || 0,
+      totalFailed: session.totalFailed || 0
+    });
+    this.updateExtractionButtons();
+
+    if (session.isExtracting) {
+      this.startElapsedTimer(session.startTime);
+      this.showLiveStats(true);
+    } else {
+      this.stopElapsedTimer();
+    }
+
+    if (Array.isArray(session.errors) && session.errors.length > 0) {
+      this.showErrorLog(session.errors);
+    }
+  }
+
+  // ── Runtime Message Listeners ─────────────────────────────────────────────
   bindRuntimeListeners() {
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-      if (message?.action === 'extractionProgress') {
+      const action = message?.action;
+
+      if (action === 'sessionUpdate') {
+        this.handleSessionUpdate(message.session);
+        return false;
+      }
+
+      if (action === 'extractionProgress') {
         this.handleExtractionProgress(message);
-      } else if (message?.action === 'leadsCleared') {
-        this.handleLeadsCleared();
-      } else if (message?.action === 'saveLeadsRequest') {
+        return false;
+      }
+
+      if (action === 'leadsCleared') {
+        this.loadLeads().then(() => {
+          this.setExtractionStatus('Saved leads cleared after page refresh');
+          this.renderAll();
+        });
+        return false;
+      }
+
+      if (action === 'saveLeadsRequest') {
         this.handleSaveLeadsRequest(message.leads, sendResponse);
         return true;
       }
+
       return false;
+    });
+  }
+
+  handleSessionUpdate(session) {
+    if (!session) return;
+    this.isExtracting = session.isExtracting;
+    this.activeSessionId = session.sessionId;
+
+    this.showProgress(session.percent || 0);
+    this.setExtractionStatus(session.statusText || '');
+    this.updateLiveStats({
+      totalFound: session.totalFound || 0,
+      totalSaved: session.totalSaved || 0,
+      totalFailed: session.totalFailed || 0
+    });
+    this.updateExtractionButtons();
+
+    if (!session.isExtracting) {
+      this.stopElapsedTimer();
+      if (session.completed || session.stopped) {
+        setTimeout(() => this.hideProgress(), 1200);
+        this.loadLeads().then(() => this.renderAll());
+      }
+    }
+
+    if (Array.isArray(session.errors) && session.errors.length > 0) {
+      this.showErrorLog(session.errors);
+    }
+  }
+
+  async handleExtractionProgress(message) {
+    if (this.activeSessionId && message.sessionId && message.sessionId !== this.activeSessionId) return;
+
+    if (Array.isArray(message.leads) && message.leads.length > 0) {
+      const saved = await this.ingestLeads(message.leads);
+      this.currentSessionSaved += saved;
+    }
+
+    if (typeof message.percent === 'number') {
+      this.showProgress(Math.max(0, Math.min(100, message.percent)));
+    }
+
+    if (message.statusText) this.setExtractionStatus(message.statusText);
+
+    this.updateLiveStats({
+      totalFound: message.totalFound ?? (this.extractedLeads.length),
+      totalSaved: message.totalSaved ?? this.currentSessionSaved,
+      totalFailed: message.totalFailed ?? 0
     });
   }
 
@@ -155,7 +475,6 @@ Would you be open to a quick 5-minute chat? I can show you how it can help your 
         source: leadData.source || 'Manual Save'
       };
 
-      // Check for duplicate
       if (!this.isDuplicateLead(preparedLead)) {
         await Storage.addLead(preparedLead);
         savedCount++;
@@ -164,116 +483,205 @@ Would you be open to a quick 5-minute chat? I can show you how it can help your 
 
     if (savedCount > 0) {
       await this.loadLeads();
-      this.updateCounts();
-      this.setExtractionStatus(`Saved ${savedCount} leads...`);
-      this.handleTabClick('saved'); // Automatically switch to Saved tab to show new leads
-      this.showToast(`Saved ${savedCount} new leads to dashboard!`, 'success');
+      this.renderAll();
+      this.showToast(`Saved ${savedCount} new leads`, 'success');
+      this.handleTabClick('saved');
       sendResponse({ saved: true, count: savedCount });
     } else {
-      this.setExtractionStatus('All leads already exist in dashboard');
-      this.showToast('All leads already exist in dashboard', 'info');
+      this.showToast('All leads already exist', 'info');
       sendResponse({ saved: false, reason: 'all_duplicates' });
     }
   }
 
-  renderExtractionSettings() {
-    document.getElementById('maxLeadsInput').value = this.extractionSettings.limit;
-    document.getElementById('noLimitInput').checked = this.extractionSettings.noLimit;
-    document.getElementById('requirePhoneInput').checked = this.extractionSettings.requirePhone;
-    // ADDED: Note about requirePhone for Maps
-    const phoneNote = document.getElementById('phoneNote');
-    if (phoneNote) {
-      phoneNote.textContent = 'Note: Disabling "Require Phone" recommended for Google Maps (few listings show phones)';
-      phoneNote.style.display = 'block';
+  // ── Event Binding ─────────────────────────────────────────────────────────
+  bindEvents() {
+    // Sidebar nav
+    document.querySelectorAll('.nav-btn').forEach(btn => {
+      btn.addEventListener('click', () => this.switchSidebarPanel(btn.dataset.panel, btn));
+    });
+
+    // Extraction buttons
+    document.getElementById('startExtraction').addEventListener('click', () => this.startExtraction());
+    document.getElementById('stopExtraction').addEventListener('click', () => this.stopExtraction());
+    document.getElementById('saveAllLeads').addEventListener('click', () => this.saveAllExtractedLeads());
+    document.getElementById('refreshLeads').addEventListener('click', () => this.refreshData());
+
+    // Settings
+    document.getElementById('maxLeadsInput').addEventListener('change', () => this.saveSettings());
+    document.getElementById('noLimitInput').addEventListener('change', () => {
+      document.getElementById('maxLeadsInput').disabled = document.getElementById('noLimitInput').checked;
+      this.saveSettings();
+    });
+    document.getElementById('requirePhoneInput').addEventListener('change', () => this.saveSettings());
+    document.getElementById('requireWebsiteInput').addEventListener('change', () => this.saveSettings());
+    document.getElementById('requireEmailInput').addEventListener('change', () => this.saveSettings());
+    document.getElementById('countryCodeInput').addEventListener('blur', () => this.saveSettings());
+
+    // WhatsApp message textarea (in-sidebar)
+    const waTextarea = document.getElementById('whatsAppMessageInput');
+    if (waTextarea) {
+      waTextarea.addEventListener('change', () => this.onWhatsAppMessageChange());
+      waTextarea.addEventListener('blur', () => this.onWhatsAppMessageChange());
     }
-    document.getElementById('countryCodeInput').value = this.getCountryCodeDigits(this.extractionSettings.countryCode);
-    document.getElementById('whatsAppMessageInput').value = this.extractionSettings.whatsAppMessage;
-    document.getElementById('maxLeadsInput').disabled = this.extractionSettings.noLimit;
-    this.setExtractionStatus('Ready to scan current page');
-  }
 
-  renderVersion() {
-    const versionBadge = document.getElementById('versionBadge');
-    if (versionBadge) {
-      versionBadge.textContent = `v${chrome.runtime.getManifest().version}`;
+    // Quick template selector dropdown
+    const quickSel = document.getElementById('templateQuickSelect');
+    if (quickSel) {
+      quickSel.addEventListener('change', async (e) => {
+        this.defaultTemplateId = e.target.value;
+        await Storage.setDefaultTemplateId(e.target.value);
+        this.loadTemplateIntoTextarea(e.target.value);
+        this.renderTemplates();
+        this.showToast('Template switched', 'success');
+      });
     }
+
+    // Gear button → open templates panel
+    document.getElementById('openTemplatesPanel')?.addEventListener('click', () => {
+      const btn = document.getElementById('navTemplates');
+      this.switchSidebarPanel('templatesPanel', btn);
+    });
+
+    // Inline var chips (in extraction panel)
+    document.querySelectorAll('.var-chips-inline .var-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const ta = document.getElementById('whatsAppMessageInput');
+        if (!ta) return;
+        const start = ta.selectionStart;
+        const end = ta.selectionEnd;
+        ta.value = ta.value.substring(0, start) + chip.dataset.var + ta.value.substring(end);
+        ta.selectionStart = ta.selectionEnd = start + chip.dataset.var.length;
+        ta.focus();
+      });
+    });
+
+    // Tabs
+    document.getElementById('tabExtracted').addEventListener('click', () => this.handleTabClick('extracted'));
+    document.getElementById('tabSaved').addEventListener('click', () => this.handleTabClick('saved'));
+
+    // Search (extracted)
+    document.getElementById('searchInput').addEventListener('input', e => {
+      this.searchQuery = e.target.value;
+      document.getElementById('clearSearch').classList.toggle('hidden', !e.target.value);
+      this.applyFilters();
+    });
+    document.getElementById('clearSearch').addEventListener('click', () => {
+      document.getElementById('searchInput').value = '';
+      this.searchQuery = '';
+      document.getElementById('clearSearch').classList.add('hidden');
+      this.applyFilters();
+    });
+
+    // Search (saved)
+    document.getElementById('savedSearchInput').addEventListener('input', e => {
+      this.savedSearchQuery = e.target.value;
+      document.getElementById('clearSavedSearch').classList.toggle('hidden', !e.target.value);
+      this.renderSavedLeads();
+    });
+    document.getElementById('clearSavedSearch').addEventListener('click', () => {
+      document.getElementById('savedSearchInput').value = '';
+      this.savedSearchQuery = '';
+      document.getElementById('clearSavedSearch').classList.add('hidden');
+      this.renderSavedLeads();
+    });
+
+    // Filter
+    document.getElementById('filterSelect').addEventListener('change', e => {
+      this.typeFilter = e.target.value;
+      this.applyFilters();
+    });
+
+    // Scroll-based pagination
+    document.getElementById('leadsList').addEventListener('scroll', () => this.handleLeadListScroll());
+
+    // Lead actions (event delegation)
+    document.getElementById('leadsList').addEventListener('click', e => this.handleLeadActionClick(e));
+    document.getElementById('savedList').addEventListener('click', e => this.handleSavedLeadClick(e));
+
+    // Export & Clear
+    document.getElementById('exportCSV').addEventListener('click', () => this.exportCSV());
+    document.getElementById('exportExcel').addEventListener('click', () => this.exportExcel());
+    document.getElementById('clearAll').addEventListener('click', () => this.clearAll());
+
+    // Modals
+    document.getElementById('closeModal').addEventListener('click', () => this.closeModal('addLeadModal'));
+    document.getElementById('addLeadForm').addEventListener('submit', e => this.handleAddLead(e));
+    document.getElementById('closeEditModal').addEventListener('click', () => this.closeModal('editLeadModal'));
+    document.getElementById('editLeadForm').addEventListener('submit', e => this.handleEditLead(e));
+    document.getElementById('closeSavedLeadViewModal').addEventListener('click', () => this.closeModal('savedLeadViewModal'));
+
+    // Confirm dialog
+    document.getElementById('confirmOk').addEventListener('click', () => {
+      if (this._confirmResolve) { this._confirmResolve(true); this._confirmResolve = null; }
+      this.closeModal('confirmModal');
+    });
+    document.getElementById('confirmCancel').addEventListener('click', () => {
+      if (this._confirmResolve) { this._confirmResolve(false); this._confirmResolve = null; }
+      this.closeModal('confirmModal');
+    });
+
+    // Close modals on overlay click
+    document.querySelectorAll('.modal-overlay').forEach(overlay => {
+      overlay.addEventListener('click', e => {
+        if (e.target === overlay) {
+          overlay.style.display = 'none';
+          if (this._confirmResolve) { this._confirmResolve(false); this._confirmResolve = null; }
+        }
+      });
+    });
+
+    // Templates panel
+    document.getElementById('addTemplateBtn').addEventListener('click', () => this.openTemplateEditor(null));
+    document.getElementById('saveTemplateBtn').addEventListener('click', () => this.saveTemplate());
+    document.getElementById('cancelTemplateBtn').addEventListener('click', () => this.closeTemplateEditor());
+
+    // Variable chips
+    document.querySelectorAll('.var-chip').forEach(chip => {
+      chip.addEventListener('click', () => this.insertVar(chip.dataset.var));
+    });
   }
 
-  async handleLimitChange() {
-    await this.saveExtractionSettings();
+  // ── Sidebar Nav ───────────────────────────────────────────────────────────
+  switchSidebarPanel(panelId, btn) {
+    document.querySelectorAll('.sidebar-panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById(panelId)?.classList.add('active');
+    btn?.classList.add('active');
+    this.activeSidebarPanel = panelId;
   }
 
-  async handleNoLimitChange() {
-    document.getElementById('maxLeadsInput').disabled = document.getElementById('noLimitInput').checked;
-    await this.saveExtractionSettings();
-  }
-
-  async handleRequirePhoneChange() {
-    await this.saveExtractionSettings();
-  }
-
-  handleCountryCodeInput(event) {
-    event.target.value = this.getCountryCodeDigits(event.target.value);
-  }
-
-  async handleCountryCodeChange() {
-    const input = document.getElementById('countryCodeInput');
-    input.value = this.getCountryCodeDigits(input.value);
-    await this.saveExtractionSettings();
-  }
-
-  async handleWhatsAppMessageChange() {
-    const input = document.getElementById('whatsAppMessageInput');
-    if (!input.value.trim()) {
-      input.value = LeadExtractor.DEFAULT_WHATSAPP_MESSAGE;
-    }
-    await this.saveExtractionSettings();
-  }
-
-  async requestSaveCurrentLead() {
-    try {
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tabs[0]?.id) {
-        this.showToast('No active tab found', 'error');
-        return;
-      }
-
-      this.showToast('Requesting lead data from page...', 'info');
-      const response = await chrome.tabs.sendMessage(tabs[0].id, { action: 'saveLeadRequest' });
-      if (response && (response.saved || response.count > 0)) {
-        this.showToast('Lead saved successfully!', 'success');
-      }
-    } catch (error) {
-      console.error('Save lead error:', error);
-      this.showToast('Page not compatible or content script not loaded', 'error');
-    }
-  }
-
-  // Lead extraction
+  // ── Extraction ────────────────────────────────────────────────────────────
   async startExtraction() {
     if (this.isExtracting) return;
 
-    this.isExtracting = true;
-    this.currentSessionSaved = 0;
-    this.updateExtractionButtons();
-    this.showProgress(0);
-    this.setExtractionStatus('Starting extraction...');
-
     try {
       const tab = await this.getExtractionTab();
-      if (!tab?.id) {
-        throw new Error('No active tab found');
-      }
+      if (!tab?.id) throw new Error('No active tab found. Open a web page or Google Maps search first.');
 
-      await this.saveExtractionSettings();
-      if (!this.extractionSettings.countryCode) {
-        throw new Error('Enter country code in + format, for example +91');
-      }
+      await this.saveSettings();
+      if (!this.extractionSettings.countryCode) throw new Error('Please enter a valid country code (e.g. 91)');
 
+      this.isExtracting = true;
+      this.currentSessionSaved = 0;
       this.currentTabId = tab.id;
       this.activeSessionId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      this.extractionStartTime = Date.now();
 
-      // Send message to content script
+      this.updateExtractionButtons();
+      this.showProgress(0);
+      this.showLiveStats(true);
+      this.setExtractionStatus('Starting extraction…');
+      this.updateLiveStats({ totalFound: 0, totalSaved: 0, totalFailed: 0 });
+      this.startElapsedTimer(this.extractionStartTime);
+
+      // Notify background
+      await chrome.runtime.sendMessage({
+        action: 'extractionStarted',
+        sessionId: this.activeSessionId,
+        tabId: tab.id
+      });
+
+      // Send extract command to content script
       const response = await chrome.tabs.sendMessage(tab.id, {
         action: 'extract',
         sessionId: this.activeSessionId,
@@ -284,103 +692,112 @@ Would you be open to a quick 5-minute chat? I can show you how it can help your 
         }
       });
 
-      if (response?.error) {
-        throw new Error(response.error);
-      }
+      if (response?.error) throw new Error(response.error);
 
+      // Handle batch returned on completion (for standard pages)
       if (Array.isArray(response?.leads) && response.leads.length > 0) {
         const saved = await this.ingestLeads(response.leads);
         this.currentSessionSaved += saved;
       }
 
       await this.loadLeads();
-      this.updateCounts();
+      this.renderAll();
       this.showProgress(100);
 
       const finalCount = response?.savedCount ?? this.currentSessionSaved;
+      let statusText;
       if (finalCount > 0) {
-        const statusText = response?.stopped
-          ? `Stopped after saving ${finalCount} business leads`
-          : `Extraction completed with ${finalCount} business leads`;
-        this.setExtractionStatus(statusText);
-        if (response?.stopped && this.autoExportOnStop) {
-          this.exportCSV();
-          this.autoExportOnStop = false;
-        }
-        this.showToast(`Extracted ${finalCount} business leads`, 'success');
+        statusText = response?.stopped
+          ? `Stopped after saving ${finalCount} leads`
+          : `Completed — ${finalCount} leads extracted`;
+        this.showToast(`Extracted ${finalCount} leads`, 'success');
       } else {
-        // FIXED: Better 0-leads guidance for Maps
-        const tips = [
-          '✓ Make sure Google Maps results are visible',
-          '✓ Check Developer Console (F12) for [EXTRACT] logs',
-          '✓ Uncheck "Phone only" filter (most listings show no phone)',
-          '✓ Scroll down to load more results before extracting',
-          '✓ Try a broader search term on Google Maps'
-        ].join('\\n');
-        this.setExtractionStatus(`No business listings found. Tips:\\n${tips}`);
-        this.showToast('No listings extracted. See Console (F12) → [EXTRACT] logs', 'warning');
+        statusText = 'No leads found. Try scrolling Maps results first, or uncheck "Phone Only".';
+        this.showToast('No leads found', 'warning');
       }
+
+      this.setExtractionStatus(statusText);
+      await chrome.runtime.sendMessage({
+        action: 'extractionCompleted',
+        statusText,
+        totalSaved: this.currentSessionSaved
+      }).catch(() => {});
+
     } catch (error) {
-      console.error('Extraction error:', error);
-      this.setExtractionStatus(error.message || 'Extraction failed');
-      this.showToast(error.message || 'Extraction failed', 'error');
+      console.error('[Popup] Extraction error:', error);
+      const msg = error.message || 'Extraction failed';
+      this.setExtractionStatus(msg);
+      this.showToast(msg, 'error');
+      await chrome.runtime.sendMessage({ action: 'extractionStopped', statusText: msg }).catch(() => {});
     } finally {
       this.isExtracting = false;
       this.activeSessionId = null;
       this.currentTabId = null;
       this.currentSessionSaved = 0;
+      this.stopElapsedTimer();
       this.updateExtractionButtons();
-      setTimeout(() => this.hideProgress(), 800);
+      setTimeout(() => this.hideProgress(), 1500);
     }
+  }
+
+  async stopExtraction() {
+    if (!this.isExtracting) return;
+
+    try {
+      if (this.currentTabId) {
+        await chrome.tabs.sendMessage(this.currentTabId, {
+          action: 'stopExtraction',
+          sessionId: this.activeSessionId
+        }).catch(() => {});
+      }
+    } catch (err) {
+      console.warn('[Popup] Stop extraction error:', err);
+    }
+
+    await chrome.runtime.sendMessage({ action: 'extractionStopped', statusText: 'Stopped by user' }).catch(() => {});
+
+    this.isExtracting = false;
+    this.activeSessionId = null;
+    this.stopElapsedTimer();
+    this.updateExtractionButtons();
+    this.setExtractionStatus('Extraction stopped by user');
+    setTimeout(() => this.hideProgress(), 800);
   }
 
   updateExtractionButtons() {
-    const btn = document.getElementById('startExtraction');
-    btn.disabled = this.isExtracting;
-    btn.classList.toggle('is-extracting', this.isExtracting);
-  }
+    const startBtn = document.getElementById('startExtraction');
+    const stopBtn = document.getElementById('stopExtraction');
+    const spinner = document.getElementById('extractionSpinner');
+    const icon = document.querySelector('.btn-icon-start');
+    const text = document.getElementById('startExtractionText');
 
-  async refreshData() {
-    const refreshBtn = document.getElementById('refreshLeads');
-    if (refreshBtn) refreshBtn.classList.add('spinning');
-
-    this.setExtractionStatus('Refreshing leads...');
-    await this.loadLeads();
-    this.updateCounts();
-    this.applyLeadFilters();
-
-    setTimeout(() => {
-      if (refreshBtn) refreshBtn.classList.remove('spinning');
-      this.setExtractionStatus('Ready');
-      this.showToast('Data refreshed', 'success');
-    }, 600);
-  }
-
-  async getExtractionTab() {
-    const activeTabs = await chrome.tabs.query({ active: true });
-    return activeTabs.find((tab) => tab.id && tab.url && !tab.url.startsWith('chrome-extension://')) || null;
-  }
-
-  // Deduplication
-  async deduplicate() {
-    const originalCount = this.leads.length;
-    this.leads = Deduplicator.deduplicate(this.leads);
-    const removedCount = originalCount - this.leads.length;
-
-    // Rebuild IndexedDB
-    await Storage.clearAllLeads();
-    for (const lead of this.leads) {
-      await Storage.addLead(lead);
+    if (this.isExtracting) {
+      startBtn.disabled = true;
+      startBtn.classList.add('is-extracting');
+      spinner.style.display = 'block';
+      if (icon) icon.style.display = 'none';
+      if (text) text.textContent = 'Running…';
+      stopBtn?.classList.remove('hidden');
+    } else {
+      startBtn.disabled = false;
+      startBtn.classList.remove('is-extracting');
+      spinner.style.display = 'none';
+      if (icon) icon.style.display = '';
+      if (text) text.textContent = 'Start Discovery';
+      stopBtn?.classList.add('hidden');
     }
 
-    await this.loadLeads();
-    this.updateCounts();
-    this.showToast(`Removed ${removedCount} duplicate leads`, 'success');
+    // Status indicator
+    const indicator = document.getElementById('statusIndicator');
+    if (indicator) {
+      indicator.className = 'status-indicator';
+      if (this.isExtracting) indicator.classList.add('running');
+    }
   }
 
+  // ── Lead Ingestion ────────────────────────────────────────────────────────
   async ingestLeads(rawLeads = []) {
     let saved = 0;
-
     for (const rawLead of rawLeads) {
       const preparedLead = {
         ...this.sanitizeLeadForStorage(rawLead),
@@ -389,118 +806,164 @@ Would you be open to a quick 5-minute chat? I can show you how it can help your 
         contacted: false,
         contactedAt: null,
         createdAt: Date.now(),
-        updatedAt: Date.now()
+        updatedAt: Date.now(),
+        source: rawLead.source || ''
       };
 
-      if (this.isDuplicateLead(preparedLead)) {
-        continue;
-      }
+      if (this.isDuplicateLead(preparedLead)) continue;
 
-      await Storage.addLead(preparedLead);
-      this.leads.unshift(preparedLead);
-      saved += 1;
+      try {
+        await Storage.addLead(preparedLead);
+        this.leads.unshift(preparedLead);
+        saved++;
+      } catch (err) {
+        console.warn('[Popup] Failed to save lead:', err);
+      }
     }
 
-    this.filteredLeads = [...this.leads];
-    this.applyLeadFilters();
-    this.updateCounts();
+    this.extractedLeads = this.leads.filter(l => !l.type || l.type === 'extracted');
+    this.savedLeads = this.leads.filter(l => l.type === 'saved');
+    this.applyFilters();
+    this.updateBadges();
     return saved;
   }
 
   isDuplicateLead(candidate) {
-    const candidateEmail = candidate.email?.toLowerCase().trim();
-    const candidatePhone = candidate.phone?.replace(/\D/g, '');
-    const candidateCompanyName = `${candidate.company || ''}_${candidate.name || ''}`.toLowerCase().trim();
+    const phone = candidate.phone?.replace(/\D/g, '');
+    const email = candidate.email?.toLowerCase().trim();
+    const nameKey = `${candidate.company || ''}_${candidate.name || ''}`.toLowerCase().trim();
 
-    return this.leads.some((lead) => {
-      const leadEmail = lead.email?.toLowerCase().trim();
-      const leadPhone = lead.phone?.replace(/\D/g, '');
-      const leadCompanyName = `${lead.company || ''}_${lead.name || ''}`.toLowerCase().trim();
+    return this.leads.some(lead => {
+      const lPhone = lead.phone?.replace(/\D/g, '');
+      const lEmail = lead.email?.toLowerCase().trim();
+      const lKey = `${lead.company || ''}_${lead.name || ''}`.toLowerCase().trim();
 
       return (
-        (candidateEmail && leadEmail && candidateEmail === leadEmail) ||
-        (candidatePhone && leadPhone && candidatePhone === leadPhone) ||
-        (candidateCompanyName !== '_' && candidateCompanyName === leadCompanyName)
+        (phone && lPhone && phone.length >= 10 && phone === lPhone) ||
+        (email && lEmail && email === lEmail) ||
+        (nameKey !== '_' && nameKey.length > 2 && nameKey === lKey)
       );
     });
   }
 
-  async handleExtractionProgress(message) {
-    if (!this.isExtracting || message.sessionId !== this.activeSessionId) {
+  // ── Deduplication ─────────────────────────────────────────────────────────
+  async deduplicate() {
+    const confirmed = await this.confirm('Remove Duplicates', 'This will remove duplicate entries. Continue?');
+    if (!confirmed) return;
+
+    const originalCount = this.leads.length;
+    this.leads = Deduplicator.deduplicate(this.leads);
+    const removedCount = originalCount - this.leads.length;
+
+    await Storage.clearAllLeads();
+    for (const lead of this.leads) await Storage.addLead(lead);
+
+    await this.loadLeads();
+    this.renderAll();
+    this.showToast(`Removed ${removedCount} duplicate leads`, 'success');
+  }
+
+  // ── Save All Leads ────────────────────────────────────────────────────────
+  async saveAllExtractedLeads() {
+    if (this.extractedLeads.length === 0) {
+      this.showToast('No extracted leads to save', 'warning');
       return;
     }
+    
+    let savedCount = 0;
+    this.showToast('Saving leads...', 'info');
 
-    if (Array.isArray(message.leads) && message.leads.length > 0) {
-      const saved = await this.ingestLeads(message.leads);
-      this.currentSessionSaved += saved;
+    for (const lead of this.extractedLeads) {
+      const updatedLead = { ...lead, type: 'saved', updatedAt: Date.now() };
+      
+      // Update the lead in storage instead of creating a duplicate
+      await Storage.updateLead(updatedLead);
+      
+      // Update in-memory
+      const index = this.leads.findIndex(l => l.id === lead.id);
+      if (index !== -1) {
+        this.leads[index] = updatedLead;
+      }
+      savedCount++;
     }
 
-    if (typeof message.percent === 'number') {
-      this.showProgress(Math.max(0, Math.min(100, message.percent)));
-    }
+    if (savedCount > 0) {
+      // Automatic Deduplication
+      const originalCount = this.leads.length;
+      this.leads = Deduplicator.deduplicate(this.leads);
+      if (this.leads.length < originalCount) {
+        await Storage.clearAllLeads();
+        for (const lead of this.leads) await Storage.addLead(lead);
+      }
 
-    if (message.statusText) {
-      this.setExtractionStatus(message.statusText);
+      this.extractedLeads = this.leads.filter(l => !l.type || l.type === 'extracted');
+      this.savedLeads = this.leads.filter(l => l.type === 'saved');
+      
+      this.renderAll();
+      this.showToast(`Successfully saved ${savedCount} leads`, 'success');
+      this.handleTabClick('saved');
+    } else {
+      this.showToast('All leads are already saved', 'info');
     }
+  }
 
-    if (message.complete && this.autoExportOnStop && this.currentSessionSaved > 0) {
+  // ── Refresh ───────────────────────────────────────────────────────────────
+  async refreshData() {
+    const btn = document.getElementById('refreshLeads');
+    btn?.classList.add('spinning');
+    try {
       await this.loadLeads();
-      this.exportCSV();
-      this.autoExportOnStop = false;
+      this.renderAll();
+      this.showToast('Data refreshed', 'success');
+    } finally {
+      setTimeout(() => btn?.classList.remove('spinning'), 600);
     }
   }
 
-  async handleLeadsCleared() {
-    await this.loadLeads();
-    this.updateCounts();
-    this.setExtractionStatus('Saved leads cleared after page refresh');
+  // ── Tab Switching ─────────────────────────────────────────────────────────
+  handleTabClick(tabId) {
+    this.activeTab = tabId;
+    document.getElementById('tabExtracted').classList.toggle('active', tabId === 'extracted');
+    document.getElementById('tabSaved').classList.toggle('active', tabId === 'saved');
+    document.getElementById('extractedLeadsContainer').classList.toggle('active', tabId === 'extracted');
+    document.getElementById('savedLeadsContainer').classList.toggle('active', tabId === 'saved');
+    this.applyFilters();
+    this.updateBadges();
   }
 
-  filterLeads(query) {
-    this.searchQuery = query;
-    this.applyLeadFilters();
+  // ── Rendering ─────────────────────────────────────────────────────────────
+  renderAll() {
+    this.applyFilters();
+    this.updateBadges();
   }
 
-  filterByType(type) {
-    this.typeFilter = type;
-    this.applyLeadFilters();
-  }
-
-  applyLeadFilters() {
+  applyFilters() {
     const searchTerm = this.searchQuery.toLowerCase().trim();
     const sourceLeads = this.activeTab === 'extracted' ? this.extractedLeads : this.savedLeads;
 
-    const filtered = sourceLeads.filter((lead) => {
+    const filtered = sourceLeads.filter(lead => {
       const matchesSearch = !searchTerm || [
-        lead.name,
-        lead.email,
-        lead.phone,
-        lead.company,
-        lead.jobTitle,
-        lead.website,
-        lead.address
-      ].some((value) => value?.toLowerCase().includes(searchTerm));
+        lead.name, lead.email, lead.phone, lead.company,
+        lead.jobTitle, lead.website, lead.address, lead.category
+      ].some(v => v?.toLowerCase().includes(searchTerm));
 
-      if (!matchesSearch) {
-        return false;
-      }
+      if (!matchesSearch) return false;
 
       switch (this.typeFilter) {
-        case 'email':
-          return Boolean(lead.email);
-        case 'phone':
-          return Boolean(lead.phone);
-        case 'company':
-          return Boolean(lead.company);
-        case 'rating':
-          return this.getRatingValue(lead.rating) > 0;
-        default:
-          return true;
+        case 'email': return Boolean(lead.email);
+        case 'phone': return Boolean(lead.phone);
+        case 'company': return Boolean(lead.company);
+        case 'rating': return this.getRatingValue(lead.rating) > 0;
+        case 'no-website': return !lead.website;
+        case 'most-reviews': return this.getReviewsValue(lead.reviews) > 0;
+        default: return true;
       }
     });
 
     this.filteredLeads = this.typeFilter === 'rating'
       ? filtered.sort((a, b) => this.getRatingValue(b.rating) - this.getRatingValue(a.rating))
+      : this.typeFilter === 'most-reviews'
+      ? filtered.sort((a, b) => this.getReviewsValue(b.reviews) - this.getReviewsValue(a.reviews))
       : filtered;
 
     if (this.activeTab === 'extracted') {
@@ -510,16 +973,15 @@ Would you be open to a quick 5-minute chat? I can show you how it can help your 
     }
   }
 
-  // Lead display
   renderLeads(reset = false) {
     const container = document.getElementById('leadsList');
     const listStatus = document.getElementById('listStatus');
 
     if (this.filteredLeads.length === 0) {
-      const emptyMessage = this.leads.length > 0
-        ? 'No leads match the current filters'
-        : 'No leads extracted yet';
-      container.innerHTML = `<div class="empty-state">${emptyMessage}</div>`;
+      const msg = this.extractedLeads.length > 0
+        ? '<div class="empty-icon">🔎</div><p>No leads match the current filters.</p>'
+        : '<div class="empty-icon">📂</div><p>No leads yet. Start a scan to find opportunities.</p>';
+      container.innerHTML = `<div class="empty-state">${msg}</div>`;
       listStatus.textContent = '';
       this.renderedLeadCount = 0;
       return;
@@ -532,153 +994,46 @@ Would you be open to a quick 5-minute chat? I can show you how it can help your 
     }
 
     const nextBatch = this.filteredLeads.slice(this.renderedLeadCount, this.renderedLeadCount + this.renderBatchSize);
-    if (nextBatch.length === 0) {
-      this.updateListStatus();
-      return;
-    }
+    if (nextBatch.length === 0) { this.updateListStatus(); return; }
 
-    const markup = nextBatch.map((lead) => `
-      <div class="lead-row ${lead.contacted ? 'contacted' : ''}" data-id="${lead.id}">
-        <div class="lead-info">
-          <div class="lead-name">${lead.name || 'Unknown'}</div>
-          <div class="lead-details">
-            ${lead.phone ? `<span style="
-    width: 250px;
-">📞 ${lead.phone}</span>` : ''}
-            ${lead.website ? `<span style="
-    width: 250px;
-">🌐 ${lead.website}</span>` : ''}
-            ${!lead.phone && !lead.website ? 'No contact info' : ''}
-          </div>
-          <div class="lead-meta">
-            <span class="status-badge ${lead.contacted ? 'contacted' : ''}">
-              ${lead.contacted ? '✓ Contacted' : '○ Not Contacted'}
-            </span>
-            ${lead.source ? `<span class="source">📍 ${lead.source.slice(0, 30)}</span>` : ''}
-          </div>
-        </div>
-        <div class="lead-actions">
-          <button type="button" class="lead-action-btn whatsapp" title="Send WhatsApp" data-action="whatsapp" data-id="${lead.id}"
-            ${this.hasWhatsAppNumber(lead) ? '' : 'disabled'}>
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
-          </button>
-          <button type="button" class="lead-action-btn contact ${lead.contacted ? 'active' : ''}" title="Mark contacted" data-action="contact" data-id="${lead.id}">
-            ${lead.contacted ? '✓' : '○'}
-          </button>
-
-          <button type="button" class="lead-action-btn delete" title="Delete" data-action="delete" data-id="${lead.id}">🗑️</button>
-        </div>
-      </div>
-    `).join('');
-
+    const markup = nextBatch.map(lead => this.renderLeadRow(lead)).join('');
     container.insertAdjacentHTML('beforeend', markup);
     this.renderedLeadCount += nextBatch.length;
     this.updateListStatus();
 
+    // Auto-load if not scrollable
     if (container.scrollHeight <= container.clientHeight && this.renderedLeadCount < this.filteredLeads.length) {
       this.renderLeads();
     }
   }
 
-  handleLeadListScroll() {
-    const container = document.getElementById('leadsList');
-    const remaining = container.scrollHeight - container.scrollTop - container.clientHeight;
+  renderLeadRow(lead) {
+    const hasWA = this.hasWhatsAppNumber(lead);
+    const ratingHtml = lead.rating ? `<span class="lead-rating">⭐ ${lead.rating}${lead.reviews ? ` (${lead.reviews})` : ''}</span>` : '';
+    const categoryHtml = lead.category ? `<span class="lead-category">${this.escapeHtml(lead.category.slice(0, 30))}</span>` : '';
 
-    if (remaining <= 48) {
-      this.renderLeads();
-    }
-  }
-
-  handleLeadActionClick(event) {
-    const button = event.target.closest('button[data-action][data-id]');
-    if (!button || button.disabled) {
-      return;
-    }
-
-    const { action, id } = button.dataset;
-    switch (action) {
-      case 'whatsapp':
-        this.openWhatsApp(id);
-        break;
-      case 'contact':
-        this.toggleContacted(id);
-        break;
-      case 'edit':
-        this.editLead(id);
-        break;
-      case 'delete':
-        this.deleteLead(id);
-        break;
-      default:
-        break;
-    }
-  }
-
-  updateListStatus() {
-    const listStatus = document.getElementById('listStatus');
-
-    if (this.activeTab !== 'extracted' || !this.filteredLeads.length) {
-      listStatus.textContent = '';
-      return;
-    }
-
-    const hasMore = this.renderedLeadCount < this.filteredLeads.length;
-    listStatus.textContent = hasMore
-      ? `Showing ${this.renderedLeadCount} of ${this.filteredLeads.length}`
-      : `Showing all ${this.filteredLeads.length}`;
-  }
-
-  // Saved Leads Display
-  renderSavedLeads() {
-    const body = document.getElementById('savedLeadsBody');
-    if (!body) return;
-
-    if (this.filteredLeads.length === 0) {
-      body.innerHTML = `<tr><td class="empty-state">No saved leads matching filters</td></tr>`;
-      return;
-    }
-
-    body.innerHTML = this.filteredLeads.map(lead => `
-      <tr data-id="${lead.id}">
-        <td>${lead.name || 'Unknown Lead'}</td>
-      </tr>
-    `).join('');
-
-    body.querySelectorAll('tr[data-id]').forEach(row => {
-      row.addEventListener('click', () => this.showSavedLeadDetails(row.dataset.id));
-    });
-  }
-
-  showSavedLeadDetails(id) {
-    const lead = this.savedLeads.find(l => l.id === id);
-    if (!lead) return;
-
-    const content = document.getElementById('savedLeadViewContent');
-    content.innerHTML = `
-      <div class="lead-row ${lead.contacted ? 'contacted' : ''}" data-id="${lead.id}" style="border: none; box-shadow: none; transform: none;">
+    return `
+      <div class="lead-row ${lead.contacted ? 'contacted' : ''}" data-id="${lead.id}">
         <div class="lead-info">
-          <div class="lead-name" style="font-size: 18px;">${lead.name || 'Unknown'}</div>
-          <div class="lead-details" style="white-space: normal;">
-            ${lead.phone ? `<div><strong>Phone:</strong> ${lead.phone}</div>` : ''}
-            ${lead.email ? `<div><strong>Email:</strong> ${lead.email}</div>` : ''}
-            ${lead.website ? `<div><strong>Website:</strong> <a href="${lead.website}" target="_blank">${lead.website}</a></div>` : ''}
-            ${lead.company ? `<div><strong>Company:</strong> ${lead.company}</div>` : ''}
-            ${lead.address ? `<div><strong>Address:</strong> ${lead.address}</div>` : ''}
-            ${lead.category ? `<div><strong>Category:</strong> ${lead.category}</div>` : ''}
-            ${lead.rating ? `<div><strong>Rating:</strong> ⭐ ${lead.rating} (${lead.reviews} reviews)</div>` : ''}
+          <div class="lead-name">${this.escapeHtml(lead.name || 'Unknown Business')}</div>
+          <div class="lead-details">
+            ${lead.phone ? `<span class="detail-chip phone">📞 ${this.escapeHtml(lead.phone)}</span>` : ''}
+            ${lead.website ? `<span class="detail-chip website">🌐 ${this.escapeHtml(lead.website.replace(/^https?:\/\//, '').slice(0, 30))}</span>` : ''}
+            ${lead.address ? `<span class="detail-chip address">📍 ${this.escapeHtml(lead.address.slice(0, 40))}</span>` : ''}
+            ${ratingHtml}${categoryHtml}
           </div>
-          <div class="lead-meta" style="margin-top: 12px;">
+          <div class="lead-meta">
             <span class="status-badge ${lead.contacted ? 'contacted' : ''}">
-              ${lead.contacted ? `✓ Contacted on ${new Date(lead.contactedAt).toLocaleDateString()}` : '○ Not Contacted Yet'}
+              ${lead.contacted ? '✓ Contacted' : '○ Not Contacted'}
             </span>
+            ${lead.source ? `<span class="source-badge" title="${this.escapeHtml(lead.source)}">📍 ${this.escapeHtml(lead.source.slice(0, 20))}</span>` : ''}
           </div>
         </div>
-        <div class="lead-actions" style="opacity: 1; align-self: flex-start;">
-          <button type="button" class="lead-action-btn whatsapp" title="Send WhatsApp" data-action="whatsapp" data-id="${lead.id}"
-            ${this.hasWhatsAppNumber(lead) ? '' : 'disabled'}>
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+        <div class="lead-actions">
+          <button type="button" class="lead-action-btn whatsapp ${hasWA ? '' : 'disabled'}" title="${hasWA ? 'Send WhatsApp' : 'No phone number'}" data-action="whatsapp" data-id="${lead.id}" ${hasWA ? '' : 'disabled'}>
+            ${this.whatsappIconSvg()}
           </button>
-          <button type="button" class="lead-action-btn contact ${lead.contacted ? 'active' : ''}" title="Mark contacted" data-action="contact" data-id="${lead.id}">
+          <button type="button" class="lead-action-btn contact ${lead.contacted ? 'active' : ''}" title="${lead.contacted ? 'Mark as not contacted' : 'Mark as contacted'}" data-action="contact" data-id="${lead.id}">
             ${lead.contacted ? '✓' : '○'}
           </button>
           <button type="button" class="lead-action-btn edit" title="Edit" data-action="edit" data-id="${lead.id}">✏️</button>
@@ -686,54 +1041,188 @@ Would you be open to a quick 5-minute chat? I can show you how it can help your 
         </div>
       </div>
     `;
+  }
 
-    // Bind actions for this specific row
-    content.querySelector('.lead-actions').addEventListener('click', (e) => {
-      this.handleLeadActionClick(e);
-      // If deleted, close modal
-      const action = e.target.closest('button')?.dataset?.action;
-      if (action === 'delete') {
-        this.closeSavedLeadViewModal();
+  renderSavedLeads() {
+    const container = document.getElementById('savedList');
+    const query = this.savedSearchQuery.toLowerCase().trim();
+
+    const filtered = this.savedLeads.filter(lead => {
+      if (!query) return true;
+      return [lead.name, lead.company, lead.phone, lead.email, lead.address].some(
+        v => v?.toLowerCase().includes(query)
+      );
+    });
+
+    if (filtered.length === 0) {
+      const msg = this.savedLeads.length > 0
+        ? '<div class="empty-icon">🔎</div><p>No saved leads match your search.</p>'
+        : '<div class="empty-icon">💾</div><p>No saved leads yet. Use "Save Page" to add leads here.</p>';
+      container.innerHTML = `<div class="empty-state">${msg}</div>`;
+      return;
+    }
+
+    container.innerHTML = filtered.map(lead => `
+      <div class="saved-lead-row" data-id="${lead.id}">
+        <div class="saved-lead-info">
+          <div class="saved-lead-name">${this.escapeHtml(lead.name || 'Unknown')}</div>
+          <div class="saved-lead-sub">
+            ${lead.phone ? `<span>📞 ${this.escapeHtml(lead.phone)}</span>` : ''}
+            ${lead.company ? `<span>🏢 ${this.escapeHtml(lead.company)}</span>` : ''}
+          </div>
+        </div>
+        <div class="saved-lead-actions">
+          <button type="button" class="lead-action-btn whatsapp ${this.hasWhatsAppNumber(lead) ? '' : 'disabled'}" title="${this.hasWhatsAppNumber(lead) ? 'Send WhatsApp' : 'No phone number'}" data-action="whatsapp" data-id="${lead.id}" ${this.hasWhatsAppNumber(lead) ? '' : 'disabled'}>
+            ${this.whatsappIconSvg()}
+          </button>
+          <button class="lead-action-btn contact ${lead.contacted ? 'active' : ''}" data-action="contact" data-id="${lead.id}" title="Toggle contacted">
+            ${lead.contacted ? '✓' : '○'}
+          </button>
+          <button class="lead-action-btn edit" data-action="edit-saved" data-id="${lead.id}" title="Edit">✏️</button>
+          <button class="lead-action-btn delete" data-action="delete" data-id="${lead.id}" title="Delete">🗑️</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  handleLeadListScroll() {
+    const container = document.getElementById('leadsList');
+    const remaining = container.scrollHeight - container.scrollTop - container.clientHeight;
+    if (remaining <= 60) this.renderLeads();
+  }
+
+  handleLeadActionClick(event) {
+    const btn = event.target.closest('button[data-action][data-id]');
+    if (!btn || btn.disabled) return;
+    this.dispatchLeadAction(btn.dataset.action, btn.dataset.id);
+  }
+
+  handleSavedLeadClick(event) {
+    const btn = event.target.closest('button[data-action][data-id]');
+    if (btn && !btn.disabled) {
+      this.dispatchLeadAction(btn.dataset.action, btn.dataset.id);
+      return;
+    }
+    // Click on row → open detail
+    const row = event.target.closest('.saved-lead-row[data-id]');
+    if (row) this.showSavedLeadDetails(row.dataset.id);
+  }
+
+  dispatchLeadAction(action, id) {
+    switch (action) {
+      case 'whatsapp': this.openWhatsApp(id); break;
+      case 'contact': this.toggleContacted(id); break;
+      case 'edit':
+      case 'edit-saved': this.editLead(id); break;
+      case 'delete': this.deleteLead(id); break;
+    }
+  }
+
+  updateListStatus() {
+    const listStatus = document.getElementById('listStatus');
+    if (!this.filteredLeads.length) { listStatus.textContent = ''; return; }
+    const hasMore = this.renderedLeadCount < this.filteredLeads.length;
+    listStatus.textContent = hasMore
+      ? `Showing ${this.renderedLeadCount} of ${this.filteredLeads.length} leads`
+      : `All ${this.filteredLeads.length} leads shown`;
+  }
+
+  updateBadges() {
+    document.getElementById('extractedBadge').textContent = this.extractedLeads.length;
+    document.getElementById('savedBadge').textContent = this.savedLeads.length;
+  }
+
+  // ── Live Stats ─────────────────────────────────────────────────────────────
+  updateLiveStats({ totalFound, totalSaved, totalFailed }) {
+    document.getElementById('statFound').textContent = totalFound ?? 0;
+    document.getElementById('statSaved').textContent = totalSaved ?? 0;
+    document.getElementById('statFailed').textContent = totalFailed ?? 0;
+  }
+
+  showLiveStats(show) {
+    const grid = document.getElementById('liveStatsGrid');
+    if (grid) grid.style.display = show ? 'grid' : 'none';
+  }
+
+  startElapsedTimer(startTime) {
+    this.stopElapsedTimer();
+    const update = () => {
+      const elapsed = Math.floor((Date.now() - (startTime || Date.now())) / 1000);
+      const m = Math.floor(elapsed / 60);
+      const s = elapsed % 60;
+      document.getElementById('statElapsed').textContent = m > 0 ? `${m}m ${s}s` : `${s}s`;
+    };
+    update();
+    this.elapsedTimer = setInterval(update, 1000);
+  }
+
+  stopElapsedTimer() {
+    if (this.elapsedTimer) { clearInterval(this.elapsedTimer); this.elapsedTimer = null; }
+  }
+
+  showErrorLog(errors) {
+    const log = document.getElementById('errorLog');
+    const list = document.getElementById('errorLogList');
+    if (!log || !list) return;
+    if (errors.length === 0) { log.classList.add('hidden'); return; }
+    log.classList.remove('hidden');
+    list.innerHTML = errors.slice(-5).map(e => `<li>${this.escapeHtml(String(e))}</li>`).join('');
+  }
+
+  // ── Lead Detail (Saved) ───────────────────────────────────────────────────
+  showSavedLeadDetails(id) {
+    const lead = this.leads.find(l => l.id === id);
+    if (!lead) return;
+
+    const content = document.getElementById('savedLeadViewContent');
+    content.innerHTML = `
+      <div class="lead-detail-view">
+        <div class="detail-name">${this.escapeHtml(lead.name || 'Unknown')}</div>
+        <div class="detail-fields">
+          ${lead.phone ? `<div class="detail-field"><span class="detail-label">📞 Phone</span><span class="detail-val">${this.escapeHtml(lead.phone)}</span></div>` : ''}
+          ${lead.email ? `<div class="detail-field"><span class="detail-label">✉️ Email</span><span class="detail-val">${this.escapeHtml(lead.email)}</span></div>` : ''}
+          ${lead.company ? `<div class="detail-field"><span class="detail-label">🏢 Company</span><span class="detail-val">${this.escapeHtml(lead.company)}</span></div>` : ''}
+          ${lead.website ? `<div class="detail-field"><span class="detail-label">🌐 Website</span><a href="${this.escapeHtml(lead.website)}" target="_blank" class="detail-link">${this.escapeHtml(lead.website)}</a></div>` : ''}
+          ${lead.address ? `<div class="detail-field"><span class="detail-label">📍 Address</span><span class="detail-val">${this.escapeHtml(lead.address)}</span></div>` : ''}
+          ${lead.category ? `<div class="detail-field"><span class="detail-label">🏷 Category</span><span class="detail-val">${this.escapeHtml(lead.category)}</span></div>` : ''}
+          ${lead.rating ? `<div class="detail-field"><span class="detail-label">⭐ Rating</span><span class="detail-val">${this.escapeHtml(lead.rating)} (${this.escapeHtml(String(lead.reviews || 0))} reviews)</span></div>` : ''}
+          <div class="detail-field">
+            <span class="detail-label">Status</span>
+            <span class="status-badge ${lead.contacted ? 'contacted' : ''}">
+              ${lead.contacted ? `✓ Contacted on ${new Date(lead.contactedAt).toLocaleDateString()}` : '○ Not Contacted'}
+            </span>
+          </div>
+        </div>
+        <div class="detail-actions">
+          ${this.hasWhatsAppNumber(lead) ? `<button class="lead-action-btn whatsapp" data-action="whatsapp" data-id="${lead.id}" title="Send WhatsApp">${this.whatsappIconSvg()} WhatsApp</button>` : ''}
+          <button class="lead-action-btn contact ${lead.contacted ? 'active' : ''}" data-action="contact" data-id="${lead.id}">${lead.contacted ? '✓ Contacted' : '○ Mark Contacted'}</button>
+          <button class="lead-action-btn edit" data-action="edit-saved" data-id="${lead.id}">✏️ Edit</button>
+          <button class="lead-action-btn delete" data-action="delete" data-id="${lead.id}">🗑️ Delete</button>
+        </div>
+      </div>
+    `;
+
+    content.querySelector('.detail-actions')?.addEventListener('click', e => {
+      const btn = e.target.closest('button[data-action][data-id]');
+      if (!btn) return;
+      this.dispatchLeadAction(btn.dataset.action, btn.dataset.id);
+      if (btn.dataset.action === 'delete') this.closeModal('savedLeadViewModal');
+      else if (btn.dataset.action === 'contact') {
+        this.closeModal('savedLeadViewModal');
+        setTimeout(() => this.showSavedLeadDetails(btn.dataset.id), 300);
       }
     });
 
     document.getElementById('savedLeadViewModal').style.display = 'flex';
   }
 
-  closeSavedLeadViewModal() {
-    document.getElementById('savedLeadViewModal').style.display = 'none';
-  }
-
-  closeModal() {
-    document.getElementById('addLeadModal').style.display = 'none';
-  }
-
-  closeEditModal() {
-    document.getElementById('editLeadModal').style.display = 'none';
-  }
-
-  handleTabClick(tabId) {
-    this.activeTab = tabId;
-
-    // Update UI
-    document.getElementById('tabExtracted').classList.toggle('active', tabId === 'extracted');
-    document.getElementById('tabSaved').classList.toggle('active', tabId === 'saved');
-
-    const extractedContainer = document.getElementById('extractedLeadsContainer');
-    const savedContainer = document.getElementById('savedLeadsContainer');
-
-    extractedContainer.classList.toggle('active', tabId === 'extracted');
-    savedContainer.classList.toggle('active', tabId === 'saved');
-
-    this.applyLeadFilters();
-    this.updateCounts();
-  }
-
-  // Lead management
+  // ── Lead CRUD ─────────────────────────────────────────────────────────────
   async deleteLead(id) {
+    const confirmed = await this.confirm('Delete Lead', 'Delete this lead permanently?');
+    if (!confirmed) return;
     await Storage.deleteLead(id);
     await this.loadLeads();
-    this.updateCounts();
+    this.renderAll();
     this.showToast('Lead deleted', 'success');
   }
 
@@ -758,29 +1247,26 @@ Would you be open to a quick 5-minute chat? I can show you how it can help your 
     e.preventDefault();
     const form = e.target;
     const id = form.id.value;
+    const existing = this.leads.find(l => l.id === id);
+    if (!existing) { this.showToast('Lead not found', 'error'); return; }
 
     const updatedLead = {
-      ...this.leads.find((lead) => lead.id === id),
-      id,
-      name: form.name.value,
-      email: form.email.value,
-      phone: form.phone.value,
-      company: form.company.value,
-      jobTitle: form.jobTitle.value,
-      website: form.website.value,
-      address: form.address.value,
+      ...existing,
+      name: form.name.value.trim(),
+      email: form.email.value.trim(),
+      phone: form.phone.value.trim(),
+      company: form.company.value.trim(),
+      jobTitle: form.jobTitle.value.trim(),
+      website: form.website.value.trim(),
+      address: form.address.value.trim(),
       updatedAt: Date.now()
     };
 
     await Storage.updateLead(updatedLead);
     await this.loadLeads();
-    this.updateCounts();
-    this.closeEditModal();
+    this.renderAll();
+    this.closeModal('editLeadModal');
     this.showToast('Lead updated', 'success');
-  }
-
-  closeEditModal() {
-    document.getElementById('editLeadModal').style.display = 'none';
   }
 
   async handleAddLead(e) {
@@ -789,105 +1275,191 @@ Would you be open to a quick 5-minute chat? I can show you how it can help your 
 
     const newLead = {
       id: this.generateId(),
-      name: form.name.value,
-      email: form.email.value,
-      phone: form.phone.value,
-      company: form.company.value,
-      jobTitle: form.jobTitle.value,
-      website: form.website.value,
-      address: form.address.value,
+      name: form.name.value.trim(),
+      email: form.email.value.trim(),
+      phone: form.phone.value.trim(),
+      company: form.company.value.trim(),
+      jobTitle: form.jobTitle.value.trim(),
+      website: form.website.value.trim(),
+      address: form.address.value.trim(),
+      type: 'saved',
       contacted: false,
       contactedAt: null,
       createdAt: Date.now(),
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
+      source: 'Manual'
     };
+
+    if (this.isDuplicateLead(newLead)) {
+      this.showToast('A lead with this info already exists', 'warning');
+      return;
+    }
 
     await Storage.addLead(newLead);
     await this.loadLeads();
-    this.updateCounts();
-    this.closeModal();
+    this.renderAll();
+    this.closeModal('addLeadModal');
     this.showToast('Lead added', 'success');
     form.reset();
   }
 
-  closeModal() {
-    document.getElementById('addLeadModal').style.display = 'none';
-  }
-
   async clearAll() {
-    if (!confirm('Are you sure you want to delete all leads?')) return;
+    const confirmed = await this.confirm('Clear All Leads', 'This will permanently delete ALL leads. This cannot be undone.');
+    if (!confirmed) return;
 
     await Storage.clearAllLeads();
     this.leads = [];
+    this.extractedLeads = [];
+    this.savedLeads = [];
     this.filteredLeads = [];
-    this.renderLeads(true);
-    this.updateCounts();
+    this.renderAll();
+    this.updateBadges();
     this.showToast('All leads cleared', 'success');
   }
 
-  // Export methods
-  exportCSV() {
-    if (this.leads.length === 0) {
-      this.showToast('No leads to export', 'error');
+  // ── Toggle Contacted ──────────────────────────────────────────────────────
+  async toggleContacted(id, forceValue = null) {
+    const lead = this.leads.find(l => l.id === id);
+    if (!lead) return;
+
+    const newValue = forceValue !== null ? forceValue : !lead.contacted;
+    const updatedLead = {
+      ...lead,
+      contacted: newValue,
+      contactedAt: newValue ? Date.now() : null,
+      updatedAt: Date.now()
+    };
+
+    await Storage.updateLead(updatedLead);
+    this.leads = this.leads.map(l => l.id === id ? updatedLead : l);
+    this.extractedLeads = this.leads.filter(l => !l.type || l.type === 'extracted');
+    this.savedLeads = this.leads.filter(l => l.type === 'saved');
+    this.applyFilters();
+    this.showToast(newValue ? 'Marked as contacted' : 'Marked as not contacted', 'success');
+  }
+
+  // ── WhatsApp ──────────────────────────────────────────────────────────────
+  async openWhatsApp(id) {
+    const lead = this.leads.find(l => l.id === id);
+    if (!lead || !this.hasWhatsAppNumber(lead)) {
+      this.showToast('No valid phone number for WhatsApp', 'error');
       return;
     }
 
-    const data = this.leads.map((lead) => this.buildExportRow(lead));
+    await this.saveSettings();
+    const template = this.getSelectedTemplate();
+    const url = this.buildWhatsAppUrl(lead, template.body);
 
+    if (!url) {
+      this.showToast('WhatsApp link could not be generated', 'error');
+      return;
+    }
+
+    try {
+      this.showToast('Opening WhatsApp…', 'info');
+      chrome.runtime.sendMessage({ action: 'openWhatsAppAndSend', url }, (response) => {
+        if (chrome.runtime.lastError || response?.error) {
+          console.warn('[Popup] WhatsApp error:', response?.error || chrome.runtime.lastError?.message);
+          this.showToast('WhatsApp opened (auto-send may not have worked)', 'warning');
+        } else {
+          this.showToast('WhatsApp opened successfully', 'success');
+          this.toggleContacted(id, true);
+        }
+      });
+    } catch (error) {
+      window.open(url, '_blank', 'noopener');
+      this.showToast('WhatsApp opened', 'success');
+    }
+  }
+
+  buildWhatsAppUrl(lead, messageBody) {
+    const phone = this.formatPhoneForWhatsApp(lead.phone);
+    if (!phone || phone.length < 10) return '';
+
+    const rawMessage = messageBody || this.getSelectedTemplate().body;
+    const personalizedMessage = this.substitutePlaceholders(rawMessage, lead);
+    return `https://wa.me/${phone}?text=${encodeURIComponent(personalizedMessage)}`;
+  }
+
+  substitutePlaceholders(message, lead) {
+    if (!message) return '';
+    return message
+      .replace(/\{\{name\}\}/gi, lead.name || '')
+      .replace(/\{\{company\}\}/gi, lead.company || lead.name || '')
+      .replace(/\{\{phone\}\}/gi, lead.phone || '')
+      .replace(/\{\{address\}\}/gi, lead.address || '')
+      .replace(/\{\{website\}\}/gi, lead.website || '')
+      .replace(/\{\{category\}\}/gi, lead.category || '')
+      .replace(/\{\{rating\}\}/gi, lead.rating || '')
+      // Legacy bracket format compatibility
+      .replace(/\[Name\]/gi, lead.name || '')
+      .replace(/\[Business Name\]/gi, lead.company || lead.name || '')
+      .replace(/\[Address\]/gi, lead.address || '')
+      .replace(/\[Website\]/gi, lead.website || '')
+      .replace(/\[Phone\]/gi, lead.phone || '')
+      .replace(/\[Category\]/gi, lead.category || '')
+      .replace(/\[Rating\]/gi, lead.rating || '')
+      // Clean up blank lines caused by empty substitutions
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  formatPhoneForWhatsApp(phone) {
+    if (!phone) return '';
+    let digits = String(phone).replace(/\D/g, '');
+    if (!digits) return '';
+
+    const countryCode = (this.extractionSettings?.countryCode || '').replace(/\D/g, '');
+    if (countryCode && digits.startsWith(countryCode)) {
+      let potentialLocal = digits.substring(countryCode.length);
+      if (potentialLocal.startsWith('0') || potentialLocal.length >= 10) {
+        potentialLocal = potentialLocal.replace(/^0+/, '');
+        return countryCode + potentialLocal;
+      }
+    }
+
+    const localPart = digits.replace(/^0+/, '');
+    if (countryCode) {
+      if (localPart.startsWith(countryCode) && localPart.length > countryCode.length) return localPart;
+      return countryCode + localPart;
+    }
+    return localPart;
+  }
+
+  hasWhatsAppNumber(lead) {
+    return this.formatPhoneForWhatsApp(lead.phone).length >= 10;
+  }
+
+  // ── Export ────────────────────────────────────────────────────────────────
+  exportCSV() {
+    if (this.leads.length === 0) { this.showToast('No leads to export', 'error'); return; }
+    const data = this.leads.map(l => this.buildExportRow(l));
     const csv = Papa.unparse(data);
-    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
-    this.downloadBlob(blob, 'leads.csv');
-    this.showToast('CSV exported', 'success');
+    this.downloadBlob(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' }), 'leads.csv');
+    this.showToast(`Exported ${this.leads.length} leads as CSV`, 'success');
   }
 
   exportExcel() {
-    if (this.leads.length === 0) {
-      this.showToast('No leads to export', 'error');
-      return;
-    }
-
-    const data = this.leads.map((lead) => this.buildExportRow(lead));
-
+    if (this.leads.length === 0) { this.showToast('No leads to export', 'error'); return; }
+    const data = this.leads.map(l => this.buildExportRow(l));
     const worksheet = XLSX.utils.json_to_sheet(data);
     const headers = Object.keys(data[0] || {});
-    const whatsAppColumnIndex = headers.indexOf('WhatsApp URL');
-
-    if (whatsAppColumnIndex >= 0) {
-      this.addWorksheetHyperlinks(worksheet, data, whatsAppColumnIndex, 'Open Chat');
-    }
+    const waColIdx = headers.indexOf('WhatsApp URL');
+    if (waColIdx >= 0) this.addWorksheetHyperlinks(worksheet, data, waColIdx, 'Open Chat');
 
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Leads');
 
-    // Auto-fit columns
-    const colWidths = Object.keys(data[0] || {}).map(key => ({
+    worksheet['!cols'] = headers.map(key => ({
       wch: Math.max(key.length, ...data.map(row => String(row[key] || '').length))
     }));
-    worksheet['!cols'] = colWidths;
 
-    XLSX.writeFile(workbook, 'leads.xlsx');
-    this.showToast('Excel exported', 'success');
-  }
-
-  // Utility methods
-  generateId() {
-    return 'lead_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-  }
-
-  sanitizeLeadForStorage(rawLead = {}) {
-    return {
-      name: rawLead.name || '',
-      phone: rawLead.phone || '',
-      company: rawLead.company || '',
-      category: rawLead.category || '',
-      rating: rawLead.rating || '',
-      reviews: rawLead.reviews || '',
-      website: rawLead.website || '',
-      address: rawLead.address || ''
-    };
+    XLSX.writeFile(workbook, this.getTimestampedFilename('leads.xlsx'));
+    this.showToast(`Exported ${this.leads.length} leads as Excel`, 'success');
   }
 
   buildExportRow(lead) {
+    const template = this.getSelectedTemplate();
     return {
       Name: lead.name || '',
       Phone: lead.phone || '',
@@ -897,23 +1469,105 @@ Would you be open to a quick 5-minute chat? I can show you how it can help your 
       Reviews: lead.reviews || '',
       Website: lead.website || '',
       Address: lead.address || '',
-      'WhatsApp URL': this.buildWhatsAppUrl(lead),
+      Email: lead.email || '',
+      'WhatsApp URL': this.buildWhatsAppUrl(lead, template.body),
+      Type: lead.type || 'extracted',
       Contacted: lead.contacted ? 'Yes' : 'No',
-      'Contacted Date': lead.contactedAt ? new Date(lead.contactedAt).toISOString() : ''
+      'Contacted Date': lead.contactedAt ? new Date(lead.contactedAt).toISOString() : '',
+      'Added Date': lead.createdAt ? new Date(lead.createdAt).toLocaleDateString() : ''
     };
+  }
+
+  addWorksheetHyperlinks(worksheet, data, columnIndex, label) {
+    data.forEach((row, rowIndex) => {
+      const url = row['WhatsApp URL'];
+      if (!url) return;
+      const cellAddress = XLSX.utils.encode_cell({ r: rowIndex + 1, c: columnIndex });
+      worksheet[cellAddress] = { t: 's', v: label, l: { Target: url } };
+    });
+  }
+
+  downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = this.getTimestampedFilename(filename);
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  getTimestampedFilename(filename) {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const dotIdx = filename.lastIndexOf('.');
+    return dotIdx >= 0
+      ? `${filename.slice(0, dotIdx)}_${ts}${filename.slice(dotIdx)}`
+      : `${filename}_${ts}`;
+  }
+
+  // ── Progress UI ───────────────────────────────────────────────────────────
+  showProgress(percent) {
+    document.getElementById('progressContainer').style.display = 'flex';
+    document.getElementById('progressFill').style.width = `${percent}%`;
+    document.getElementById('progressText').textContent = `${Math.round(percent)}%`;
+  }
+
+  hideProgress() {
+    document.getElementById('progressContainer').style.display = 'none';
+  }
+
+  setExtractionStatus(message) {
+    document.getElementById('extractionStatus').textContent = message;
+  }
+
+  // ── Modals & Dialogs ──────────────────────────────────────────────────────
+  closeModal(id) {
+    const modal = document.getElementById(id);
+    if (modal) modal.style.display = 'none';
+  }
+
+  confirm(title, message) {
+    return new Promise(resolve => {
+      document.getElementById('confirmTitle').textContent = title;
+      document.getElementById('confirmMessage').textContent = message;
+      document.getElementById('confirmModal').style.display = 'flex';
+      this._confirmResolve = resolve;
+    });
+  }
+
+  // ── Toast ─────────────────────────────────────────────────────────────────
+  showToast(message, type = '') {
+    const toast = document.getElementById('toast');
+    toast.textContent = message;
+    toast.className = `toast show ${type}`;
+    clearTimeout(this._toastTimer);
+    this._toastTimer = setTimeout(() => toast.classList.remove('show'), 3200);
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  generateId() {
+    return `lead_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   }
 
   normalizeStoredLead(lead) {
-    return {
-      ...lead,
-      contacted: Boolean(lead.contacted),
-      contactedAt: lead.contactedAt || null
-    };
+    return { ...lead, contacted: Boolean(lead.contacted), contactedAt: lead.contactedAt || null };
   }
 
-  getWhatsAppMessage() {
-    const input = document.getElementById('whatsAppMessageInput');
-    return input?.value?.trim() || LeadExtractor.DEFAULT_WHATSAPP_MESSAGE;
+  sanitizeLeadForStorage(raw = {}) {
+    return {
+      name: String(raw.name || '').trim(),
+      phone: String(raw.phone || '').trim(),
+      email: String(raw.email || '').trim(),
+      company: String(raw.company || '').trim(),
+      category: String(raw.category || '').trim(),
+      rating: String(raw.rating || '').trim(),
+      reviews: String(raw.reviews || '').trim(),
+      website: String(raw.website || '').trim(),
+      address: String(raw.address || '').trim(),
+      jobTitle: String(raw.jobTitle || '').trim(),
+      source: String(raw.source || '').trim()
+    };
   }
 
   normalizeCountryCode(value) {
@@ -930,194 +1584,32 @@ Would you be open to a quick 5-minute chat? I can show you how it can help your 
     return Number.isFinite(parsed) ? parsed : 0;
   }
 
-  formatPhoneForWhatsApp(phone) {
-    if (!phone) return '';
-
-    // 1. Get all digits
-    let digits = String(phone).replace(/\D/g, '');
-    if (!digits) return '';
-
-    // 2. Get country code digits from settings
-    const countryCode = (this.extractionSettings?.countryCode || '').replace(/\D/g, '');
-
-    // 3. Handle cases where the number already includes the country code
-    if (countryCode && digits.startsWith(countryCode)) {
-      // Check for a leading zero after the country code (e.g. 91-0-1234567890)
-      let potentialLocal = digits.substring(countryCode.length);
-
-      // ONLY strip if the remaining number is at least 10 digits (standard mobile length)
-      // OR if it explicitly starts with a 0 (international format mistake)
-      if (potentialLocal.startsWith('0') || potentialLocal.length >= 10) {
-        potentialLocal = potentialLocal.replace(/^0+/, '');
-        return countryCode + potentialLocal;
-      }
-    }
-
-    // 4. If it doesn't start with CC, treat as local number
-    // Remove all leading zeros (e.g. 0091... or 0123...)
-    const localPart = digits.replace(/^0+/, '');
-
-    // If a country code is set, prepend it
-    if (countryCode) {
-      // Special case: if the number now starts with CC after removing leading zeros
-      if (localPart.startsWith(countryCode) && localPart.length > countryCode.length) {
-        return localPart;
-      }
-      return countryCode + localPart;
-    }
-
-    return localPart;
+  getReviewsValue(value) {
+    const parsed = parseInt(String(value || '').replace(/[^0-9]/g, ''), 10);
+    return Number.isFinite(parsed) ? parsed : 0;
   }
 
-  hasWhatsAppNumber(lead) {
-    return this.formatPhoneForWhatsApp(lead.phone).length >= 10;
+  async getExtractionTab() {
+    const activeTabs = await chrome.tabs.query({ active: true });
+    return activeTabs.find(tab => tab.id && tab.url && !tab.url.startsWith('chrome-extension://')) || null;
   }
 
-  buildWhatsAppUrl(lead) {
-    const phone = this.formatPhoneForWhatsApp(lead.phone);
-    if (!phone) {
-      return '';
-    }
-
-    const rawMessage = this.getWhatsAppMessage();
-    const personalizedMessage = this.substitutePlaceholders(rawMessage, lead);
-    const text = encodeURIComponent(personalizedMessage);
-    return `https://wa.me/${phone}?text=${text}`;
+  escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
   }
 
-  substitutePlaceholders(message, lead) {
-    if (!message) return '';
-
-    return message
-      .replace(/\[Name\]/gi, lead.name || '')
-      .replace(/\[Business Name\]/gi, lead.company || lead.name || '')
-      .replace(/\[Address\]/gi, lead.address || '')
-      .replace(/\[Website\]/gi, lead.website || '')
-      .replace(/\[Phone\]/gi, lead.phone || '')
-      .replace(/\[Category\]/gi, lead.category || '')
-      .replace(/\[Rating\]/gi, lead.rating || '');
-  }
-
-  addWorksheetHyperlinks(worksheet, data, columnIndex, label) {
-    data.forEach((row, rowIndex) => {
-      const url = row['WhatsApp URL'];
-      if (!url) {
-        return;
-      }
-
-      const cellAddress = XLSX.utils.encode_cell({ r: rowIndex + 1, c: columnIndex });
-      worksheet[cellAddress] = {
-        t: 's',
-        v: label,
-        l: { Target: url, Tooltip: url },
-        s: {
-          font: { color: { rgb: '0563C1' }, underline: true }
-        }
-      };
-    });
-  }
-
-  async openWhatsApp(id) {
-    const lead = this.leads.find((item) => item.id === id);
-    if (!lead || !this.hasWhatsAppNumber(lead)) {
-      this.showToast('No valid phone number for WhatsApp', 'error');
-      return;
-    }
-
-    await this.saveExtractionSettings();
-    const url = this.buildWhatsAppUrl(lead);
-    if (!url) {
-      this.showToast('WhatsApp link could not be generated', 'error');
-      return;
-    }
-
-    try {
-      this.showToast('Opening WhatsApp and preparing to send...', 'info');
-      chrome.runtime.sendMessage({ action: 'openWhatsAppAndSend', url }, (response) => {
-        if (response?.error) {
-          console.error('WhatsApp auto-send error:', response.error);
-          this.showToast('WhatsApp opened, but could not auto-send message', 'warning');
-        } else {
-          this.showToast('WhatsApp message sent!', 'success');
-          this.toggleContacted(id, true); // Automatically mark as contacted
-        }
-      });
-    } catch (error) {
-      window.open(url, '_blank', 'noopener');
-      this.showToast('WhatsApp link opened', 'success');
-    }
-  }
-
-  async toggleContacted(id, forceValue = null) {
-    const lead = this.leads.find((item) => item.id === id);
-    if (!lead) {
-      return;
-    }
-
-    const newValue = forceValue !== null ? forceValue : !lead.contacted;
-    const updatedLead = {
-      ...lead,
-      contacted: newValue,
-      contactedAt: newValue ? Date.now() : null,
-      updatedAt: Date.now()
-    };
-
-    await Storage.updateLead(updatedLead);
-    this.leads = this.leads.map((item) => item.id === id ? updatedLead : item);
-    this.applyLeadFilters();
-    this.showToast(updatedLead.contacted ? 'Lead marked as contacted' : 'Contacted mark removed', 'success');
-  }
-
-  downloadBlob(blob, filename) {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = this.getTimestampedFilename(filename);
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
-
-  getTimestampedFilename(filename) {
-    const now = new Date();
-    const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    return filename.replace('.', `_${timestamp}.`);
-  }
-
-  updateCounts() {
-    const count = this.activeTab === 'extracted' ? this.extractedLeads.length : this.savedLeads.length;
-    const label = this.activeTab === 'extracted' ? 'extracted leads' : 'saved leads';
-    document.getElementById('leadCount').textContent = `${count} ${label}`;
-  }
-
-  setExtractionStatus(message) {
-    document.getElementById('extractionStatus').textContent = message;
-  }
-
-  showProgress(percent) {
-    document.getElementById('progressContainer').style.display = 'flex';
-    document.getElementById('progressFill').style.width = `${percent}%`;
-    document.getElementById('progressText').textContent = `${percent}%`;
-  }
-
-  hideProgress() {
-    document.getElementById('progressContainer').style.display = 'none';
-  }
-
-  showToast(message, type = '') {
-    const toast = document.getElementById('toast');
-    toast.textContent = message;
-    toast.className = `toast show ${type}`;
-
-    setTimeout(() => {
-      toast.classList.remove('show');
-    }, 3000);
+  whatsappIconSvg() {
+    return `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>`;
   }
 }
 
-// Initialize app
-let app;
+// ── Bootstrap ─────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  app = new LeadExtractor();
+  window.app = new LeadExtractor();
 });

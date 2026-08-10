@@ -7,6 +7,29 @@ const extractionState = {
   stopRequested: false
 };
 
+// INJECT GLOW ANIMATION CSS
+(function injectAnimationCSS() {
+  if (document.getElementById('lead-extractor-animation-styles')) return;
+  const style = document.createElement('style');
+  style.id = 'lead-extractor-animation-styles';
+  style.textContent = `
+    @keyframes maps-card-extract-glow {
+      0% { box-shadow: 0 0 0px rgba(0, 150, 60, 0); background-color: transparent; }
+      20% { box-shadow: inset 0 0 15px 2px rgba(0, 180, 80, 0.6), 0 0 10px rgba(0, 180, 80, 0.4); background-color: rgba(0, 255, 100, 0.1); }
+      100% { box-shadow: 0 0 0px rgba(0, 150, 60, 0); background-color: transparent; }
+    }
+    .maps-card-extracting {
+      animation: maps-card-extract-glow 1.5s ease-out !important;
+      border-radius: 8px !important;
+      position: relative !important;
+      z-index: 10 !important;
+    }
+  `;
+  if (document.head || document.documentElement) {
+    (document.head || document.documentElement).appendChild(style);
+  }
+})();
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'extract') {
     handleExtractionRequest(message)
@@ -104,21 +127,36 @@ async function autoSendWhatsAppMessage() {
     throw new Error('Not on a WhatsApp page');
   }
 
-  const timeoutMs = 15000;
-  const pollMs = 500;
+  const timeoutMs = 25000;
+  const pollMs = 600;
   const start = Date.now();
 
+  // Phase 1: Wait for WhatsApp Web main chat container to mount
+  let mainReady = false;
+  while (Date.now() - start < 12000) {
+    const mainEl = document.querySelector('#main') ||
+      document.querySelector('[data-testid="conversation-panel-wrapper"]') ||
+      document.querySelector('.two');
+    if (mainEl) { mainReady = true; break; }
+    await wait(400);
+  }
+
+  if (!mainReady) {
+    // WhatsApp Web may open in a different tab – best-effort continue
+    console.warn('[WA] Main container not found, attempting to click send anyway');
+  }
+
+  // Phase 2: Wait for message input and send button
   while (Date.now() - start < timeoutMs) {
     const sendButton = findWhatsAppSendButton();
     if (sendButton && !sendButton.disabled) {
       sendButton.click();
       return;
     }
-
     await wait(pollMs);
   }
 
-  throw new Error('Send button not ready');
+  throw new Error('WhatsApp send button not ready within timeout');
 }
 
 function findWhatsAppSendButton() {
@@ -246,14 +284,7 @@ async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }
     throw new Error('Google Maps results panel not found');
   }
 
-  console.log('[EXTRACT] Starting full auto-scroll to load all data...');
 
-  // Enhanced auto-scroll with proper detection
-  await enhancedAutoScroll(scrollContainer, {
-    maxAttempts: 1000,
-    scrollDelay: 5000,
-    debug: true
-  });
 
   let stagnantRounds = 0;
   let previousLeadCount = 0;
@@ -283,11 +314,13 @@ async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }
       const filtered = extracted
         .filter(lead => !seen.has(buildLeadKey(lead)))
         .filter(lead => matchesLeadRequirements(lead, options))
-        .filter((lead, index, self) => {
+        .filter(lead => keywords.length === 0 || matchesKeywords(lead, keywords))
+        .filter((lead) => {
           const key = buildLeadKey(lead);
           if (seen.has(key)) return false;
+          if (maxLeads && seen.size >= maxLeads) return false;
           seen.add(key);
-          return maxLeads ? self.length < maxLeads : true;
+          return true;
         });
 
       console.log(`[EXTRACT] Filtered/unique: ${filtered.length} leads (seen: ${seen.size})`);
@@ -302,16 +335,20 @@ async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }
       await reportExtractionProgress({
         sessionId,
         leads: batch,
+        totalFound: seen.size,
+        totalSaved: bufferedLeads.length,
         savedCount: bufferedLeads.length,
-        statusText: `Saved ${bufferedLeads.length} leads...`,
+        statusText: `Found ${bufferedLeads.length} leads…`,
         percent: maxLeads ? Math.round((bufferedLeads.length / maxLeads) * 100) : approximatePercent(stagnantRounds, false)
       });
     } else {
       await reportExtractionProgress({
         sessionId,
         leads: [],
+        totalFound: seen.size,
+        totalSaved: bufferedLeads.length,
         savedCount: bufferedLeads.length,
-        statusText: `Scanning... ${bufferedLeads.length} leads found`,
+        statusText: `Scanning… ${bufferedLeads.length} leads found`,
         percent: maxLeads ? Math.round((bufferedLeads.length / maxLeads) * 100) : approximatePercent(stagnantRounds, false)
       });
     }
@@ -355,6 +392,8 @@ async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }
   await reportExtractionProgress({
     sessionId,
     leads: [],
+    totalFound: seen.size,
+    totalSaved: bufferedLeads.length,
     savedCount: bufferedLeads.length,
     statusText: finalStatus,
     percent: 100,
@@ -534,6 +573,13 @@ async function waitForGoogleMapsReady() {
 
 // ENHANCED: Extract more data from Google Maps card
 function extractGoogleMapsCardLead(card) {
+  // Trigger animation on the card
+  if (card && card.classList) {
+    card.classList.remove('maps-card-extracting');
+    void card.offsetWidth; // Trigger reflow
+    card.classList.add('maps-card-extracting');
+  }
+
   const rawText = card.innerText || '';
   const text = normalizeWhitespace(rawText);
 
@@ -615,6 +661,8 @@ function extractGoogleMapsCardLead(card) {
     services: services.join(', '),
     rawData: text.substring(0, 500) // Store raw data for debugging
   });
+
+
 
   // FIXED: Accept leads with ANY data (name is most important)
   if (!lead.name && !lead.phone && !lead.website) {
@@ -908,12 +956,16 @@ function isLikelyLeftSidebar(el) {
 
 async function reportExtractionProgress(payload) {
   try {
+    // Send to background – background will update its state and forward to popup
     await chrome.runtime.sendMessage({
       action: 'extractionProgress',
       ...payload
     });
   } catch (error) {
-    // Ignore when popup is closed or not listening.
+    // Popup may be closed; background will have stored the state
+    if (!error?.message?.includes('Could not establish connection')) {
+      console.warn('[CONTENT] Progress report failed:', error.message);
+    }
   }
 }
 
