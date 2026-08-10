@@ -865,45 +865,49 @@ class LeadExtractor {
 
   // ── Save All Leads ────────────────────────────────────────────────────────
   async saveAllExtractedLeads() {
-    if (this.extractedLeads.length === 0) {
-      this.showToast('No extracted leads to save', 'warning');
-      return;
-    }
-    
-    let savedCount = 0;
-    this.showToast('Saving leads...', 'info');
-
-    for (const lead of this.extractedLeads) {
-      const updatedLead = { ...lead, type: 'saved', updatedAt: Date.now() };
-      
-      // Update the lead in storage instead of creating a duplicate
-      await Storage.updateLead(updatedLead);
-      
-      // Update in-memory
-      const index = this.leads.findIndex(l => l.id === lead.id);
-      if (index !== -1) {
-        this.leads[index] = updatedLead;
+    try {
+      if (!this.extractedLeads || this.extractedLeads.length === 0) {
+        this.showToast('No extracted leads to save', 'warning');
+        return;
       }
-      savedCount++;
-    }
+      
+      let savedCount = 0;
+      this.showToast('Saving leads...', 'info');
 
-    if (savedCount > 0) {
-      // Automatic Deduplication
-      const originalCount = this.leads.length;
-      this.leads = Deduplicator.deduplicate(this.leads);
-      if (this.leads.length < originalCount) {
+      for (const lead of this.extractedLeads) {
+        const updatedLead = { ...lead, type: 'saved', updatedAt: Date.now() };
+        
+        // Update in-memory
+        const index = this.leads.findIndex(l => l.id === lead.id);
+        if (index !== -1) {
+          this.leads[index] = updatedLead;
+        }
+        savedCount++;
+      }
+
+      if (savedCount > 0) {
+        // Automatic Deduplication
+        this.leads = Deduplicator.deduplicate(this.leads);
+        
+        // Always rewrite to DB to ensure consistency and avoid partial state bugs
         await Storage.clearAllLeads();
-        for (const lead of this.leads) await Storage.addLead(lead);
-      }
+        for (const lead of this.leads) {
+          // Use updateLead (which uses put) instead of addLead to avoid ConstraintErrors
+          await Storage.updateLead(lead); 
+        }
 
-      this.extractedLeads = this.leads.filter(l => !l.type || l.type === 'extracted');
-      this.savedLeads = this.leads.filter(l => l.type === 'saved');
-      
-      this.renderAll();
-      this.showToast(`Successfully saved ${savedCount} leads`, 'success');
-      this.handleTabClick('saved');
-    } else {
-      this.showToast('All leads are already saved', 'info');
+        this.extractedLeads = this.leads.filter(l => !l.type || l.type === 'extracted');
+        this.savedLeads = this.leads.filter(l => l.type === 'saved');
+        
+        this.renderAll();
+        this.showToast(`Successfully saved ${savedCount} leads`, 'success');
+        this.handleTabClick('saved');
+      } else {
+        this.showToast('All leads are already saved', 'info');
+      }
+    } catch (err) {
+      console.error('[Popup] Save error:', err);
+      this.showToast('Error saving leads. Please try again.', 'error');
     }
   }
 

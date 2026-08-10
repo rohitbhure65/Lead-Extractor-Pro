@@ -361,7 +361,12 @@ async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }
     const sameLastCard = Boolean(lastCardKey) && lastCardKey === previousLastCardKey;
     const reachedEnd = hasReachedGoogleMapsResultsEnd(scrollContainer);
 
-    if (noNewLeads && sameLastCard && reachedEnd) {
+    if (reachedEnd) {
+      console.log('[EXTRACT] Reached end of Google Maps results. Stopping.');
+      break;
+    }
+
+    if (noNewLeads && sameLastCard) {
       stagnantRounds += 1;
     } else {
       stagnantRounds = 0;
@@ -371,7 +376,7 @@ async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }
     previousLastCardKey = lastCardKey;
 
     if (stagnantRounds >= 3) {
-      console.log('[EXTRACT] No new leads found, stopping extraction');
+      console.log('[EXTRACT] No new leads found for 3 rounds, stopping extraction');
       break;
     }
 
