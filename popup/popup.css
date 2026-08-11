@@ -1788,3 +1788,29 @@ body {
     flex: 1;
   }
 }
+
+.license-overlay {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(13, 17, 23, 0.95);
+  backdrop-filter: blur(8px);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.license-card {
+  background: var(--bg-card);
+  padding: 32px;
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+  border: 1px solid var(--border);
+  text-align: center;
+  max-width: 360px;
+  width: 90%;
+}
+.license-card h2 { margin-bottom: 8px; font-size: 24px; color: var(--text-primary); }
+.license-card p { margin-bottom: 24px; color: var(--text-secondary); font-size: 13px; }
+.license-card .buy-link { font-size: 13px; color: var(--accent-blue); text-decoration: none; display: block; margin-top: 16px; transition: color 0.2s; }
+.license-card .buy-link:hover { color: #fff; }
+.license-card .license-error { color: var(--accent-red); font-size: 13px; margin-top: 12px; }

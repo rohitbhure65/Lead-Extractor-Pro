@@ -1,5 +1,6 @@
 // Lead Extractor Pro - Background Service Worker
 // Manages extraction session state, relays progress, handles tab operations
+importScripts('../env.js');
 
 // ── Session State ──────────────────────────────────────────────────────────────
 // Kept in-memory AND written to chrome.storage.local so the popup can
@@ -145,8 +146,102 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ relayed: true });
     return false;
   }
+  // ── Licensing & API Key ────────────────────────────────────────────────────
+  if (action === 'validateLicense') {
+    validateLicense(message.apiKey)
+      .then(result => sendResponse(result))
+      .catch(error => sendResponse({ valid: false, error: error.message }));
+    return true;
+  }
+
+  if (action === 'getLicenseState') {
+    getLicenseState().then(state => sendResponse(state));
+    return true;
+  }
+
+  if (action === 'logoutLicense') {
+    logoutLicense().then(() => sendResponse({ ok: true }));
+    return true;
+  }
 
   return false;
+});
+
+// ── Licensing Logic ──────────────────────────────────────────────────────────
+const API_URL = `${ENV.APP_URL}/api`;
+let heartbeatInterval = null;
+
+async function validateLicense(apiKey) {
+  try {
+    const res = await fetch(`${API_URL}/verify-key`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apiKey })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Validation failed');
+    
+    await chrome.storage.local.set({ 
+      licenseState: {
+        valid: true,
+        sessionToken: apiKey, // Keep apiKey as token
+        expiresAt: data.expiresAt
+      }
+    });
+    
+    startHeartbeat();
+    return data;
+  } catch (error) {
+    throw error;
+  }
+}
+
+async function getLicenseState() {
+  const data = await chrome.storage.local.get('licenseState');
+  const state = data.licenseState || { valid: false };
+  if (state.valid && new Date(state.expiresAt) < new Date()) {
+    state.valid = false;
+    await logoutLicense();
+  }
+  return state;
+}
+
+async function logoutLicense() {
+  stopHeartbeat();
+  await chrome.storage.local.remove('licenseState');
+}
+
+async function startHeartbeat() {
+  stopHeartbeat();
+  heartbeatInterval = setInterval(async () => {
+    const state = await getLicenseState();
+    if (!state.valid || !state.sessionToken) return stopHeartbeat();
+
+    try {
+      const res = await fetch(`${API_URL}/verify-key`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: state.sessionToken })
+      });
+      if (!res.ok) {
+        // Session invalid or expired
+        await logoutLicense();
+        broadcastSession({ licenseRevoked: true });
+      }
+    } catch (e) {
+      // Network error, ignore temporarily
+    }
+  }, 4 * 60 * 1000); // 4 minutes
+}
+
+function stopHeartbeat() {
+  if (heartbeatInterval) clearInterval(heartbeatInterval);
+  heartbeatInterval = null;
+}
+
+// Start heartbeat on load if licensed
+getLicenseState().then(state => {
+  if (state.valid) startHeartbeat();
 });
 
 // ── Handle progress updates from content script ───────────────────────────────

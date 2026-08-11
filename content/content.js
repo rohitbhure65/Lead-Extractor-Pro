@@ -188,6 +188,15 @@ function findWhatsAppSendButton() {
 }
 
 async function handleExtractionRequest(message) {
+  // License check
+  const isLicensed = await new Promise(resolve => {
+    chrome.runtime.sendMessage({ action: 'getLicenseState' }, state => resolve(state && state.valid));
+  });
+  
+  if (!isLicensed) {
+    throw new Error('Pro License required to extract leads. Please activate your license in the extension popup.');
+  }
+
   const sessionId = message.sessionId || `session_${Date.now()}`;
   extractionState.sessionId = sessionId;
   extractionState.isRunning = true;

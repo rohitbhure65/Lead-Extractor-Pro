@@ -58,9 +58,18 @@ class LeadExtractor {
     this.init();
   }
 
-  // ── Initialization ────────────────────────────────────────────────────────
   async init() {
     try {
+      const state = await new Promise(resolve => {
+        chrome.runtime.sendMessage({ action: 'getLicenseState' }, resolve);
+      });
+      
+      if (!state.valid) {
+        document.getElementById('licenseOverlay').style.display = 'flex';
+        this.bindLicenseEvents();
+        return; // Halt initialization if not licensed
+      }
+
       await this.loadSettings();
       await this.loadLeads();
       await this.loadTemplates();
@@ -74,6 +83,45 @@ class LeadExtractor {
       console.error('[Popup] Init error:', err);
       this.showToast('Extension error on init', 'error');
     }
+  }
+
+  bindLicenseEvents() {
+    document.getElementById('activateLicenseBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('activateLicenseBtn');
+      const input = document.getElementById('licenseKeyInput');
+      const err = document.getElementById('licenseError');
+      const key = input.value.trim();
+      
+      if (!key) {
+        err.textContent = 'Please enter a valid API key';
+        return;
+      }
+      
+      btn.textContent = 'Activating...';
+      btn.disabled = true;
+      err.textContent = '';
+      
+      try {
+        const result = await new Promise((resolve, reject) => {
+          chrome.runtime.sendMessage({ action: 'validateLicense', apiKey: key }, res => {
+            if (chrome.runtime.lastError) reject(chrome.runtime.lastError);
+            else resolve(res);
+          });
+        });
+        
+        if (result.valid) {
+          document.getElementById('licenseOverlay').style.display = 'none';
+          this.init(); // Restart app init
+        } else {
+          err.textContent = result.error || 'Invalid API key';
+        }
+      } catch (e) {
+        err.textContent = 'Failed to connect to server';
+      } finally {
+        btn.textContent = 'Activate Now';
+        btn.disabled = false;
+      }
+    });
   }
 
   // ── Settings ──────────────────────────────────────────────────────────────
@@ -1616,4 +1664,8 @@ class LeadExtractor {
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   window.app = new LeadExtractor();
+  const buyLink = document.getElementById('buySubscriptionLink');
+  if (buyLink && typeof ENV !== 'undefined' && ENV.APP_URL) {
+    buyLink.href = ENV.APP_URL;
+  }
 });

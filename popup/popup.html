@@ -10,6 +10,20 @@
 
 <body>
   <div class="app-container">
+    <!-- License Overlay -->
+    <div id="licenseOverlay" class="license-overlay" style="display: none;">
+      <div class="license-card">
+        <div class="brand-icon mx-auto mb-4" style="width: 48px; height: 48px; line-height: 48px; font-size: 24px;">L</div>
+        <h2>Activate Pro</h2>
+        <p>Enter your license key to unlock unlimited lead extraction.</p>
+        <div class="form-field">
+          <input type="text" id="licenseKeyInput" placeholder="Enter API Key">
+        </div>
+        <button id="activateLicenseBtn" class="btn-primary" style="width: 100%; margin-bottom: 12px;">Activate Now</button>
+        <a href="#" id="buySubscriptionLink" target="_blank" class="buy-link">Don't have a key? Buy Subscription</a>
+        <div id="licenseError" class="license-error"></div>
+      </div>
+    </div>
 
     <!-- Sidebar: Controls & Settings -->
     <aside class="sidebar">
@@ -361,6 +375,7 @@
     </div>
   </div>
 
+  <script src="../env.js"></script>
   <script src="../libs/papaparse.min.js"></script>
   <script src="../libs/xlsx.min.js"></script>
   <script src="../utils/storage.js"></script>
