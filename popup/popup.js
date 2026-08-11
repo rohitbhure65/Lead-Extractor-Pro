@@ -124,6 +124,31 @@ class LeadExtractor {
     });
   }
 
+  showLicenseOverlay(isExpired = false) {
+    const overlay = document.getElementById('licenseOverlay');
+    const err = document.getElementById('licenseError');
+    const title = overlay.querySelector('h2');
+    const desc = overlay.querySelector('p');
+    const btn = document.getElementById('activateLicenseBtn');
+    const link = document.getElementById('buySubscriptionLink');
+
+    overlay.style.display = 'flex';
+    
+    if (isExpired) {
+      title.textContent = 'Subscription Expired';
+      desc.textContent = 'Your subscription has expired. Please renew to continue extracting leads.';
+      err.textContent = 'Your subscription has expired.';
+      err.style.display = 'block';
+      link.textContent = 'Buy Subscription Again';
+    } else {
+      title.textContent = 'Activate Pro';
+      desc.textContent = 'Enter your license key to unlock unlimited lead extraction.';
+      err.textContent = '';
+      err.style.display = 'none';
+      link.textContent = 'Don\'t have a key? Buy Subscription';
+    }
+  }
+
   // ── Settings ──────────────────────────────────────────────────────────────
   async loadSettings() {
     const saved = await Storage.get('extractionSettings');
@@ -703,6 +728,20 @@ class LeadExtractor {
     if (this.isExtracting) return;
 
     try {
+      // ── Verify License Before Extraction ─────────────────────────────────────────
+      const stateResponse = await new Promise(resolve => chrome.runtime.sendMessage({ action: 'getLicenseState' }, resolve));
+      if (!stateResponse || !stateResponse.sessionToken) {
+        this.showLicenseOverlay(false);
+        return;
+      }
+
+      const validationResponse = await new Promise(resolve => chrome.runtime.sendMessage({ action: 'validateLicense', apiKey: stateResponse.sessionToken }, resolve));
+      if (validationResponse && validationResponse.valid === false) {
+        this.showLicenseOverlay(validationResponse.status === 'expired');
+        return;
+      }
+      // ───────────────────────────────────────────────────────────────────────────
+
       const tab = await this.getExtractionTab();
       if (!tab?.id) throw new Error('No active tab found. Open a web page or Google Maps search first.');
 
@@ -773,7 +812,10 @@ class LeadExtractor {
 
     } catch (error) {
       console.error('[Popup] Extraction error:', error);
-      const msg = error.message || 'Extraction failed';
+      let msg = error.message || 'Extraction failed';
+      if (msg.includes('Receiving end does not exist')) {
+        msg = 'Could not connect to the page. Please refresh the page (F5) and try again.';
+      }
       this.setExtractionStatus(msg);
       this.showToast(msg, 'error');
       await chrome.runtime.sendMessage({ action: 'extractionStopped', statusText: msg }).catch(() => { });

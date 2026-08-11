@@ -149,8 +149,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // ── Licensing & API Key ────────────────────────────────────────────────────
   if (action === 'validateLicense') {
     validateLicense(message.apiKey)
-      .then(result => sendResponse(result))
-      .catch(error => sendResponse({ valid: false, error: error.message }));
+      .then(result => sendResponse({ valid: true, ...result }))
+      .catch(async error => {
+        const errorMsg = (error.message || '').toLowerCase();
+        let status = 'error';
+        if (errorMsg.includes('expired') || errorMsg.includes('over')) {
+          status = 'expired';
+        } else {
+          status = 'deleted';
+          await logoutLicense();
+        }
+        sendResponse({ valid: false, status, error: error.message });
+      });
     return true;
   }
 
