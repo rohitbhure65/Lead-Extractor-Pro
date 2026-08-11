@@ -1,4 +1,4 @@
-// Lead Extractor Pro – Popup Script (v2)
+// Map Leadify – Popup Script (v2)
 // Manages UI, state sync with background, WhatsApp templates, lead CRUD
 
 'use strict';
@@ -63,7 +63,7 @@ class LeadExtractor {
       const state = await new Promise(resolve => {
         chrome.runtime.sendMessage({ action: 'getLicenseState' }, resolve);
       });
-      
+
       if (!state.valid) {
         document.getElementById('licenseOverlay').style.display = 'flex';
         this.bindLicenseEvents();
@@ -91,16 +91,16 @@ class LeadExtractor {
       const input = document.getElementById('licenseKeyInput');
       const err = document.getElementById('licenseError');
       const key = input.value.trim();
-      
+
       if (!key) {
         err.textContent = 'Please enter a valid API key';
         return;
       }
-      
+
       btn.textContent = 'Activating...';
       btn.disabled = true;
       err.textContent = '';
-      
+
       try {
         const result = await new Promise((resolve, reject) => {
           chrome.runtime.sendMessage({ action: 'validateLicense', apiKey: key }, res => {
@@ -108,7 +108,7 @@ class LeadExtractor {
             else resolve(res);
           });
         });
-        
+
         if (result.valid) {
           document.getElementById('licenseOverlay').style.display = 'none';
           this.init(); // Restart app init
@@ -769,14 +769,14 @@ class LeadExtractor {
         action: 'extractionCompleted',
         statusText,
         totalSaved: this.currentSessionSaved
-      }).catch(() => {});
+      }).catch(() => { });
 
     } catch (error) {
       console.error('[Popup] Extraction error:', error);
       const msg = error.message || 'Extraction failed';
       this.setExtractionStatus(msg);
       this.showToast(msg, 'error');
-      await chrome.runtime.sendMessage({ action: 'extractionStopped', statusText: msg }).catch(() => {});
+      await chrome.runtime.sendMessage({ action: 'extractionStopped', statusText: msg }).catch(() => { });
     } finally {
       this.isExtracting = false;
       this.activeSessionId = null;
@@ -796,13 +796,13 @@ class LeadExtractor {
         await chrome.tabs.sendMessage(this.currentTabId, {
           action: 'stopExtraction',
           sessionId: this.activeSessionId
-        }).catch(() => {});
+        }).catch(() => { });
       }
     } catch (err) {
       console.warn('[Popup] Stop extraction error:', err);
     }
 
-    await chrome.runtime.sendMessage({ action: 'extractionStopped', statusText: 'Stopped by user' }).catch(() => {});
+    await chrome.runtime.sendMessage({ action: 'extractionStopped', statusText: 'Stopped by user' }).catch(() => { });
 
     this.isExtracting = false;
     this.activeSessionId = null;
@@ -918,13 +918,13 @@ class LeadExtractor {
         this.showToast('No extracted leads to save', 'warning');
         return;
       }
-      
+
       let savedCount = 0;
       this.showToast('Saving leads...', 'info');
 
       for (const lead of this.extractedLeads) {
         const updatedLead = { ...lead, type: 'saved', updatedAt: Date.now() };
-        
+
         // Update in-memory
         const index = this.leads.findIndex(l => l.id === lead.id);
         if (index !== -1) {
@@ -936,17 +936,17 @@ class LeadExtractor {
       if (savedCount > 0) {
         // Automatic Deduplication
         this.leads = Deduplicator.deduplicate(this.leads);
-        
+
         // Always rewrite to DB to ensure consistency and avoid partial state bugs
         await Storage.clearAllLeads();
         for (const lead of this.leads) {
           // Use updateLead (which uses put) instead of addLead to avoid ConstraintErrors
-          await Storage.updateLead(lead); 
+          await Storage.updateLead(lead);
         }
 
         this.extractedLeads = this.leads.filter(l => !l.type || l.type === 'extracted');
         this.savedLeads = this.leads.filter(l => l.type === 'saved');
-        
+
         this.renderAll();
         this.showToast(`Successfully saved ${savedCount} leads`, 'success');
         this.handleTabClick('saved');
@@ -1015,8 +1015,8 @@ class LeadExtractor {
     this.filteredLeads = this.typeFilter === 'rating'
       ? filtered.sort((a, b) => this.getRatingValue(b.rating) - this.getRatingValue(a.rating))
       : this.typeFilter === 'most-reviews'
-      ? filtered.sort((a, b) => this.getReviewsValue(b.reviews) - this.getReviewsValue(a.reviews))
-      : filtered;
+        ? filtered.sort((a, b) => this.getReviewsValue(b.reviews) - this.getReviewsValue(a.reviews))
+        : filtered;
 
     if (this.activeTab === 'extracted') {
       this.renderLeads(true);

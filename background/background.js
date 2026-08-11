@@ -1,4 +1,4 @@
-// Lead Extractor Pro - Background Service Worker
+// Map Leadify - Background Service Worker
 // Manages extraction session state, relays progress, handles tab operations
 importScripts('../env.js');
 
@@ -142,7 +142,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     chrome.runtime.sendMessage({
       action: 'saveLeadRequest',
       lead: message.lead
-    }).catch(() => {});
+    }).catch(() => { });
     sendResponse({ relayed: true });
     return false;
   }
@@ -180,15 +180,15 @@ async function validateLicense(apiKey) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Validation failed');
-    
-    await chrome.storage.local.set({ 
+
+    await chrome.storage.local.set({
       licenseState: {
         valid: true,
         sessionToken: apiKey, // Keep apiKey as token
         expiresAt: data.expiresAt
       }
     });
-    
+
     startHeartbeat();
     return data;
   } catch (error) {
@@ -279,7 +279,7 @@ async function extractFromUrl(url, keywords = []) {
       keywords,
       source: url
     });
-    await chrome.tabs.remove(tab.id).catch(() => {});
+    await chrome.tabs.remove(tab.id).catch(() => { });
     return response?.leads || [];
   } catch (error) {
     console.error('[BG] URL extraction error:', error);
@@ -362,7 +362,7 @@ function delay(ms) {
 // ── Extension installed ───────────────────────────────────────────────────────
 chrome.runtime.onInstalled.addListener(async (details) => {
   if (details.reason === 'install') {
-    console.log('[BG] Lead Extractor Pro installed');
+    console.log('[BG] Map Leadify installed');
     await resetSession();
   }
 });

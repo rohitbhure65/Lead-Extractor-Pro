@@ -1,4 +1,4 @@
-// Lead Extractor Pro - Content Script
+// Map Leadify - Content Script
 // Injected into pages for lead extraction
 
 const extractionState = {
@@ -89,14 +89,14 @@ function extractAllCurrentPageLeads() {
       listLeads.forEach(l => l.source = `Google Maps List - ${source}`);
       allLeads.push(...listLeads);
     }
-    
+
     // Also try the selected place if any (might be different or redundant)
     const placeLead = extractSelectedGoogleMapsPlace();
     if (placeLead && placeLead.name) {
       placeLead.source = `Google Maps Place - ${source}`;
       // Deduplicate against list results by name/phone
-      const exists = allLeads.some(l => 
-        (l.name === placeLead.name) || 
+      const exists = allLeads.some(l =>
+        (l.name === placeLead.name) ||
         (l.phone && l.phone === placeLead.phone)
       );
       if (!exists) {
@@ -192,7 +192,7 @@ async function handleExtractionRequest(message) {
   const isLicensed = await new Promise(resolve => {
     chrome.runtime.sendMessage({ action: 'getLicenseState' }, state => resolve(state && state.valid));
   });
-  
+
   if (!isLicensed) {
     throw new Error('Pro License required to extract leads. Please activate your license in the extension popup.');
   }

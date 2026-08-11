@@ -1,4 +1,4 @@
-// Lead Extractor Pro - Deduplication Logic
+// Map Leadify - Deduplication Logic
 
 class Deduplicator {
   // Deduplicate leads by email, phone, or company+name
@@ -16,7 +16,7 @@ class Deduplicator {
 
     for (const lead of leads) {
       let duplicate = false;
-      
+
       // Check email first
       const email = getPrimaryKey(lead);
       if (email) {
@@ -26,7 +26,7 @@ class Deduplicator {
           seen.set('email:' + email, lead.id);
         }
       }
-      
+
       // Check phone as secondary
       if (!duplicate) {
         const phone = getSecondaryKey(lead);
@@ -55,11 +55,11 @@ class Deduplicator {
         result.push(lead);
       } else if (!keepFirst) {
         // Replace with newer version
-        const existingIndex = result.findIndex(l => 
+        const existingIndex = result.findIndex(l =>
           (lead.email && l.email?.toLowerCase() === lead.email?.toLowerCase()) ||
           (lead.phone && l.phone?.replace(/\D/g, '') === lead.phone?.replace(/\D/g, ''))
         );
-        
+
         if (existingIndex !== -1) {
           result[existingIndex] = lead;
         }
@@ -111,7 +111,7 @@ class Deduplicator {
 
     phoneGroups.forEach((groupLeads, key) => {
       if (groupLeads.length > 1) {
-        const hasExisting = groups.some(g => 
+        const hasExisting = groups.some(g =>
           g.type === 'phone' && g.key === key
         );
         if (!hasExisting) {
@@ -130,23 +130,23 @@ class Deduplicator {
   // Merge duplicate leads, keeping most complete data
   static mergeDuplicates(leads) {
     const primaryKeyMap = new Map();
-    
+
     leads.forEach(lead => {
       const key = lead.email?.toLowerCase().trim() || lead.phone?.replace(/\D/g, '') || '';
       if (!key) return;
-      
+
       if (!primaryKeyMap.has(key)) {
         primaryKeyMap.set(key, lead);
       } else {
         const existing = primaryKeyMap.get(key);
-        
+
         // Merge non-empty fields
         existing.name = existing.name || lead.name;
         existing.company = existing.company || lead.company;
         existing.jobTitle = existing.jobTitle || lead.jobTitle;
         existing.website = existing.website || lead.website;
         existing.address = existing.address || lead.address;
-        
+
         // Keep most recent timestamp
         if (lead.createdAt > existing.createdAt) {
           existing.createdAt = lead.createdAt;

@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Lead Extractor Pro",
+  "name": "Map Leadify",
   "version": "1.0.0",
   "description": "Extract, manage, and export leads from any website",
   "permissions": [

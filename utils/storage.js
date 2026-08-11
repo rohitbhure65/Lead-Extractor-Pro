@@ -1,4 +1,4 @@
-// Lead Extractor Pro - Storage Layer (IndexedDB + chrome.storage.local)
+// Map Leadify - Storage Layer (IndexedDB + chrome.storage.local)
 
 class Storage {
   static DB_NAME = 'LeadExtractorDB';
