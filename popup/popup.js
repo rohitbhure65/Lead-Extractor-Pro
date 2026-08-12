@@ -730,14 +730,9 @@ class LeadExtractor {
     try {
       // ── Verify License Before Extraction ─────────────────────────────────────────
       const stateResponse = await new Promise(resolve => chrome.runtime.sendMessage({ action: 'getLicenseState' }, resolve));
-      if (!stateResponse || !stateResponse.sessionToken) {
-        this.showLicenseOverlay(false);
-        return;
-      }
-
-      const validationResponse = await new Promise(resolve => chrome.runtime.sendMessage({ action: 'validateLicense', apiKey: stateResponse.sessionToken }, resolve));
-      if (validationResponse && validationResponse.valid === false) {
-        this.showLicenseOverlay(validationResponse.status === 'expired');
+      if (!stateResponse || !stateResponse.sessionToken || !stateResponse.valid) {
+        const isExpired = stateResponse && stateResponse.sessionToken && !stateResponse.valid;
+        this.showLicenseOverlay(isExpired);
         return;
       }
       // ───────────────────────────────────────────────────────────────────────────
@@ -768,16 +763,29 @@ class LeadExtractor {
         tabId: tab.id
       });
 
-      // Send extract command to content script
-      const response = await chrome.tabs.sendMessage(tab.id, {
-        action: 'extract',
-        sessionId: this.activeSessionId,
-        options: {
-          maxLeads: this.extractionSettings.noLimit ? null : this.extractionSettings.limit,
-          noLimit: this.extractionSettings.noLimit,
-          requirePhone: this.extractionSettings.requirePhone
+      // Send extract command to content script with retry mechanism
+      let response;
+      let retries = 3;
+      while (retries > 0) {
+        try {
+          response = await chrome.tabs.sendMessage(tab.id, {
+            action: 'extract',
+            sessionId: this.activeSessionId,
+            options: {
+              maxLeads: this.extractionSettings.noLimit ? null : this.extractionSettings.limit,
+              noLimit: this.extractionSettings.noLimit,
+              requirePhone: this.extractionSettings.requirePhone
+            }
+          });
+          break; // Success
+        } catch (err) {
+          retries--;
+          if (retries === 0 || !(err.message || '').includes('Receiving end does not exist')) {
+            throw err;
+          }
+          await new Promise(r => setTimeout(r, 1000)); // Wait 1s and retry
         }
-      });
+      }
 
       if (response?.error) throw new Error(response.error);
 
