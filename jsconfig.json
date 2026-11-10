@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "allowJs": true,
+    "checkJs": true,
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": []
+  },
+  "include": [
+    "env.js",
+    "background/**/*.js",
+    "content/**/*.js",
+    "popup/**/*.js",
+    "utils/**/*.js",
+    "types/globals.d.ts"
+  ],
+  "exclude": [
+    "libs/**",
+    "tests/**"
+  ]
+}
+

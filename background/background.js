@@ -6,9 +6,91 @@ if (typeof importScripts === 'function' && typeof ENV === 'undefined') {
 
 const APP_URL = (typeof ENV !== 'undefined' && ENV.APP_URL) ? ENV.APP_URL : 'http://localhost:3000';
 
+/**
+ * @typedef {Object} ExtractionSession
+ * @property {boolean} isExtracting
+ * @property {string | null} sessionId
+ * @property {number | null} startTime
+ * @property {number} totalFound
+ * @property {number} totalSaved
+ * @property {number} totalFailed
+ * @property {number} percent
+ * @property {string} statusText
+ * @property {boolean} stopped
+ * @property {boolean} completed
+ * @property {number | null} tabId
+ * @property {string[]} errors
+ */
+
+/**
+ * @typedef {Object} LicenseState
+ * @property {boolean} [valid]
+ * @property {string | null} [sessionToken]
+ * @property {string} [accessType]
+ * @property {boolean} [upgradedFromTrial]
+ * @property {string | null} [email]
+ * @property {number | null} [durationDays]
+ * @property {string | null} [startDate]
+ * @property {string | null} [expiresAt]
+ * @property {number | null} [remainingMs]
+ * @property {any} [trial]
+ * @property {any} [subscription]
+ * @property {boolean} [expired]
+ * @property {boolean} [revoked]
+ * @property {boolean} [deleted]
+ * @property {boolean} [networkError]
+ * @property {boolean} [canActivate]
+ * @property {string | null} [statusCode]
+ * @property {string | null} [code]
+ * @property {string} [status]
+ * @property {string | null} [error]
+ * @property {number} [lastCheckedAt]
+ */
+
+/** @typedef {Error & { details?: Record<string, any> }} DetailedError */
+
+/**
+ * @param {string} message
+ * @param {Record<string, any>} [details]
+ * @returns {DetailedError}
+ */
+function createDetailedError(message, details) {
+  /** @type {DetailedError} */
+  const err = new Error(message);
+  if (details !== undefined) {
+    err.details = details;
+  }
+  return err;
+}
+
+/**
+ * @param {unknown} error
+ * @param {string} [fallback]
+ * @returns {string}
+ */
+function getErrorMessage(error, fallback = 'Unknown error') {
+  if (error instanceof Error && error.message) return error.message;
+  if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
+    return error.message;
+  }
+  return fallback;
+}
+
+/**
+ * @param {unknown} error
+ * @returns {Record<string, any> | undefined}
+ */
+function getErrorDetails(error) {
+  if (error && typeof error === 'object' && 'details' in error && error.details && typeof error.details === 'object') {
+    return /** @type {Record<string, any>} */ (error.details);
+  }
+  return undefined;
+}
+
 // ── Session State ──────────────────────────────────────────────────────────────
 // Kept in-memory AND written to chrome.storage.local so the popup can
 // re-hydrate whenever it reopens.
+/** @type {ExtractionSession} */
 let extractionSession = {
   isExtracting: false,
   sessionId: null,
@@ -50,6 +132,9 @@ async function resetSession() {
 }
 
 // Broadcast session state to any open popup windows
+/**
+ * @param {Record<string, any>} [extra]
+ */
 function broadcastSession(extra = {}) {
   chrome.runtime.sendMessage({
     action: 'sessionUpdate',
@@ -60,6 +145,12 @@ function broadcastSession(extra = {}) {
 }
 
 // ── Message Listener ──────────────────────────────────────────────────────────
+/**
+ * @param {any} message
+ * @param {chrome.runtime.MessageSender} sender
+ * @param {(response?: any) => void} sendResponse
+ * @returns {boolean}
+ */
 function handleBackgroundMessage(message, sender, sendResponse) {
   const action = message?.action;
 
@@ -86,7 +177,7 @@ function handleBackgroundMessage(message, sender, sendResponse) {
         }
         extractionSession = {
           isExtracting: true,
-          sessionId: message.sessionId,
+          sessionId: message.sessionId || null,
           startTime: Date.now(),
           totalFound: 0,
           totalSaved: 0,
@@ -95,13 +186,13 @@ function handleBackgroundMessage(message, sender, sendResponse) {
           statusText: 'Starting extraction…',
           stopped: false,
           completed: false,
-          tabId: message.tabId || null,
+          tabId: typeof message.tabId === 'number' ? message.tabId : null,
           errors: []
         };
         await persistSession();
         sendResponse({ ok: true, access });
       })
-      .catch(error => sendResponse({ ok: false, error: error.message || 'Access check failed' }));
+      .catch((error) => sendResponse({ ok: false, error: getErrorMessage(error, 'Access check failed') }));
     return true;
   }
 
@@ -137,7 +228,7 @@ function handleBackgroundMessage(message, sender, sendResponse) {
   if (action === 'extractFromUrl') {
     extractFromUrl(message.url, message.keywords)
       .then(leads => sendResponse({ leads }))
-      .catch(error => sendResponse({ error: error.message, leads: [] }));
+      .catch((error) => sendResponse({ error: getErrorMessage(error, 'URL extraction failed'), leads: [] }));
     return true;
   }
 
@@ -145,7 +236,7 @@ function handleBackgroundMessage(message, sender, sendResponse) {
   if (action === 'openWhatsAppAndSend') {
     openWhatsAppAndSend(message.url)
       .then(() => sendResponse({ ok: true }))
-      .catch(error => sendResponse({ error: error.message || 'Failed to open WhatsApp' }));
+      .catch((error) => sendResponse({ error: getErrorMessage(error, 'Failed to open WhatsApp') }));
     return true;
   }
 
@@ -165,9 +256,10 @@ function handleBackgroundMessage(message, sender, sendResponse) {
       activateIfUnusedTrial: message.activateIfUnusedTrial !== false
     })
       .then(result => sendResponse({ valid: true, ...result }))
-      .catch(async error => {
-        const details = error.details || {};
-        const errorMsg = (error.message || '').toLowerCase();
+      .catch(async (error) => {
+        const details = getErrorDetails(error) || {};
+        const messageText = getErrorMessage(error, 'Validation failed');
+        const errorMsg = messageText.toLowerCase();
         let status = 'error';
         if (details.code === 'TRIAL_NOT_ACTIVATED') {
           status = 'trial_not_activated';
@@ -184,7 +276,7 @@ function handleBackgroundMessage(message, sender, sendResponse) {
               accessType: details.accessType || prev.accessType || 'paid',
               statusCode: details.code || 'EXPIRED',
               expiresAt: details.expiresAt || prev.expiresAt || null,
-              error: error.message,
+              error: messageText,
               lastCheckedAt: Date.now()
             }
           });
@@ -204,7 +296,7 @@ function handleBackgroundMessage(message, sender, sendResponse) {
           revoked: status === 'revoked',
           canActivate: Boolean(details.canActivate),
           expiresAt: details.expiresAt || null,
-          error: error.message
+          error: messageText
         });
       });
     return true;
@@ -213,8 +305,8 @@ function handleBackgroundMessage(message, sender, sendResponse) {
   if (action === 'activateTrial') {
     activateTrial({ trialKey: message.trialKey, email: message.email })
       .then(result => sendResponse({ valid: true, ...result }))
-      .catch(error => {
-        const details = error.details || {};
+      .catch((error) => {
+        const details = getErrorDetails(error) || {};
         const expired = details.code === 'TRIAL_EXPIRED' || Boolean(details.expired);
         sendResponse({
           valid: false,
@@ -222,7 +314,8 @@ function handleBackgroundMessage(message, sender, sendResponse) {
           code: details.code || null,
           accessType: 'trial',
           expired,
-          error: error.message
+          expiresAt: details.expiresAt || null,
+          error: getErrorMessage(error, 'Trial activation failed')
         });
       });
     return true;
@@ -231,7 +324,7 @@ function handleBackgroundMessage(message, sender, sendResponse) {
   if (action === 'verifyLicenseNow') {
     verifyLicenseNow({ broadcastOnFailure: message.broadcast !== false })
       .then(result => sendResponse(result))
-      .catch(error => sendResponse({ valid: false, status: 'error', error: error.message }));
+      .catch((error) => sendResponse({ valid: false, status: 'error', error: getErrorMessage(error, 'Verification failed') }));
     return true;
   }
 
@@ -255,9 +348,16 @@ if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
 // ── Licensing & Trial Enforcement Logic ─────────────────────────────────────
 const API_URL = `${APP_URL}/api`;
 const LICENSE_ALARM_NAME = 'mapLeadifyLicenseCheck';
+/** @type {ReturnType<typeof setInterval> | null} */
 let heartbeatInterval = null;
+/** @type {ReturnType<typeof setTimeout> | null} */
 let expiryTimeout = null;
 
+/**
+ * @param {string} apiKey
+ * @param {Record<string, any>} data
+ * @returns {LicenseState}
+ */
 function buildLicenseStatePayload(apiKey, data) {
   return {
     valid: true,
@@ -279,6 +379,11 @@ function buildLicenseStatePayload(apiKey, data) {
   };
 }
 
+/**
+ * @param {string} apiKey
+ * @param {{ email?: string, activateIfUnusedTrial?: boolean }} [options]
+ * @returns {Promise<LicenseState & Record<string, any>>}
+ */
 async function validateLicense(apiKey, options = {}) {
   const cleanKey = String(apiKey || '').trim();
   if (!cleanKey) {
@@ -296,19 +401,21 @@ async function validateLicense(apiKey, options = {}) {
     if (data.code === 'TRIAL_NOT_ACTIVATED' && options.activateIfUnusedTrial) {
       return activateTrial({ trialKey: cleanKey, email: options.email });
     }
-    const err = new Error(data.error || 'Validation failed');
-    err.details = { httpStatus: res.status, ...data };
-    throw err;
+    throw createDetailedError(data.error || 'Validation failed', { httpStatus: res.status, ...data });
   }
 
   const nextState = buildLicenseStatePayload(cleanKey, data);
   await chrome.storage.local.set({ licenseState: nextState });
 
-  startHeartbeat(nextState.expiresAt);
-  return { valid: true, ...data, ...nextState };
+  startHeartbeat(nextState.expiresAt || null);
+  return { ...data, ...nextState };
 }
 
-async function activateTrial({ trialKey, email } = {}) {
+/**
+ * @param {{ trialKey?: string, email?: string }} [params]
+ * @returns {Promise<LicenseState & Record<string, any>>}
+ */
+async function activateTrial({ trialKey = '', email = '' } = {}) {
   const cleanKey = String(trialKey || '').trim();
   const cleanEmail = email ? String(email).trim() : '';
 
@@ -335,15 +442,14 @@ async function activateTrial({ trialKey, email } = {}) {
           revoked: false,
           sessionToken: cleanKey,
           accessType: 'trial',
+          expiresAt: data.expiresAt || null,
           statusCode: data.code || 'TRIAL_EXPIRED',
           error: data.error || 'Trial has expired',
           lastCheckedAt: Date.now()
         }
       });
     }
-    const err = new Error(data.error || 'Trial activation failed');
-    err.details = { httpStatus: res.status, ...data };
-    throw err;
+    throw createDetailedError(data.error || 'Trial activation failed', { httpStatus: res.status, ...data });
   }
 
   const nextState = buildLicenseStatePayload(cleanKey, {
@@ -352,10 +458,13 @@ async function activateTrial({ trialKey, email } = {}) {
   });
   await chrome.storage.local.set({ licenseState: nextState });
 
-  startHeartbeat(nextState.expiresAt);
-  return { valid: true, ...data, ...nextState };
+  startHeartbeat(nextState.expiresAt || null);
+  return { ...data, ...nextState };
 }
 
+/**
+ * @param {Partial<LicenseState> & Record<string, any>} [revokedInfo]
+ */
 async function handleAccessRevoked(revokedInfo = {}) {
   if (extractionSession.isExtracting) {
     if (extractionSession.tabId && chrome.tabs?.sendMessage) {
@@ -383,8 +492,13 @@ async function handleAccessRevoked(revokedInfo = {}) {
   }
 }
 
+/**
+ * @param {{ broadcastOnFailure?: boolean }} [options]
+ * @returns {Promise<LicenseState>}
+ */
 async function verifyLicenseNow({ broadcastOnFailure = true } = {}) {
   const data = await chrome.storage.local.get('licenseState');
+  /** @type {LicenseState | undefined} */
   const current = data?.licenseState;
 
   if (!current || !current.sessionToken) {
@@ -398,12 +512,14 @@ async function verifyLicenseNow({ broadcastOnFailure = true } = {}) {
   try {
     return await validateLicense(current.sessionToken, { activateIfUnusedTrial: false });
   } catch (error) {
-    const details = error.details;
-    const msg = (error.message || '').toLowerCase();
+    const details = getErrorDetails(error);
+    const errorMessage = getErrorMessage(error, 'License verification failed');
+    const msg = errorMessage.toLowerCase();
 
     // Network/transport error without HTTP status
     if (!details) {
       if (current.expiresAt && new Date(current.expiresAt) <= new Date()) {
+        /** @type {LicenseState} */
         const expiredState = {
           ...current,
           valid: false,
@@ -418,7 +534,7 @@ async function verifyLicenseNow({ broadcastOnFailure = true } = {}) {
         await chrome.storage.local.set({ licenseState: expiredState });
         stopHeartbeat();
         if (broadcastOnFailure) await handleAccessRevoked(expiredState);
-        return { valid: false, status: 'expired', ...expiredState };
+        return { ...expiredState, valid: false, status: 'expired' };
       }
 
       return {
@@ -437,6 +553,7 @@ async function verifyLicenseNow({ broadcastOnFailure = true } = {}) {
       msg.includes('expired') ||
       msg.includes('over')
     ) {
+      /** @type {LicenseState} */
       const expiredState = {
         ...current,
         valid: false,
@@ -445,16 +562,17 @@ async function verifyLicenseNow({ broadcastOnFailure = true } = {}) {
         accessType: details.accessType || current.accessType || 'paid',
         statusCode: details.code || 'EXPIRED',
         expiresAt: details.expiresAt || current.expiresAt || null,
-        error: error.message,
+        error: errorMessage,
         lastCheckedAt: Date.now()
       };
       await chrome.storage.local.set({ licenseState: expiredState });
       stopHeartbeat();
       if (broadcastOnFailure) await handleAccessRevoked(expiredState);
-      return { valid: false, status: 'expired', ...expiredState };
+      return { ...expiredState, valid: false, status: 'expired' };
     }
 
     if (details.code === 'KEY_REVOKED' || details.code === 'SUBSCRIPTION_REVOKED' || msg.includes('revoked')) {
+      /** @type {LicenseState} */
       const revokedState = {
         ...current,
         valid: false,
@@ -462,16 +580,17 @@ async function verifyLicenseNow({ broadcastOnFailure = true } = {}) {
         revoked: true,
         accessType: details.accessType || current.accessType || 'paid',
         statusCode: details.code || 'REVOKED',
-        error: error.message,
+        error: errorMessage,
         lastCheckedAt: Date.now()
       };
       await chrome.storage.local.set({ licenseState: revokedState });
       stopHeartbeat();
       if (broadcastOnFailure) await handleAccessRevoked(revokedState);
-      return { valid: false, status: 'revoked', ...revokedState };
+      return { ...revokedState, valid: false, status: 'revoked' };
     }
 
     if (details.code === 'TRIAL_NOT_ACTIVATED') {
+      /** @type {LicenseState} */
       const unusedState = {
         ...current,
         valid: false,
@@ -482,33 +601,37 @@ async function verifyLicenseNow({ broadcastOnFailure = true } = {}) {
         statusCode: 'TRIAL_NOT_ACTIVATED',
         email: details.email || current.email || null,
         durationDays: details.durationDays || current.durationDays || null,
-        error: error.message,
+        error: errorMessage,
         lastCheckedAt: Date.now()
       };
       await chrome.storage.local.set({ licenseState: unusedState });
       stopHeartbeat();
       if (broadcastOnFailure) await handleAccessRevoked(unusedState);
-      return { valid: false, status: 'trial_not_activated', ...unusedState };
+      return { ...unusedState, valid: false, status: 'trial_not_activated' };
     }
 
     // Deleted / non-existent key
     await logoutLicense();
+    /** @type {LicenseState} */
     const deletedState = {
       valid: false,
       expired: false,
       revoked: false,
       deleted: true,
-      error: error.message
+      error: errorMessage
     };
     if (broadcastOnFailure) await handleAccessRevoked(deletedState);
-    return { valid: false, status: 'deleted', ...deletedState };
+    return { ...deletedState, status: 'deleted' };
   }
 }
 
+/** @returns {Promise<LicenseState>} */
 async function getLicenseState() {
   const data = await chrome.storage.local.get('licenseState');
+  /** @type {LicenseState} */
   const state = data?.licenseState || { valid: false };
   if (state.valid && state.expiresAt && new Date(state.expiresAt) <= new Date()) {
+    /** @type {LicenseState} */
     const expiredState = {
       ...state,
       valid: false,
@@ -529,8 +652,11 @@ async function logoutLicense() {
   await chrome.storage.local.remove('licenseState');
 }
 
+/**
+ * @param {string | null} expiresAt
+ */
 function scheduleExactExpiryCheck(expiresAt) {
-  if (expiryTimeout) {
+  if (expiryTimeout !== null) {
     clearTimeout(expiryTimeout);
     expiryTimeout = null;
   }
@@ -544,6 +670,9 @@ function scheduleExactExpiryCheck(expiresAt) {
   }
 }
 
+/**
+ * @param {string | null} [expiresAt]
+ */
 async function startHeartbeat(expiresAt = null) {
   stopHeartbeat();
   scheduleExactExpiryCheck(expiresAt);
@@ -558,12 +687,12 @@ async function startHeartbeat(expiresAt = null) {
 }
 
 function stopHeartbeat() {
-  if (heartbeatInterval) clearInterval(heartbeatInterval);
+  if (heartbeatInterval !== null) clearInterval(heartbeatInterval);
   heartbeatInterval = null;
-  if (expiryTimeout) clearTimeout(expiryTimeout);
+  if (expiryTimeout !== null) clearTimeout(expiryTimeout);
   expiryTimeout = null;
   if (typeof chrome !== 'undefined' && chrome.alarms?.clear) {
-    chrome.alarms.clear(LICENSE_ALARM_NAME).catch?.(() => {});
+    chrome.alarms.clear(LICENSE_ALARM_NAME).catch(() => {});
   }
 }
 
@@ -578,12 +707,16 @@ if (typeof chrome !== 'undefined' && chrome.alarms?.onAlarm) {
 // Start heartbeat on load if a license or trial key is present
 if (typeof chrome !== 'undefined' && chrome.storage?.local) {
   getLicenseState().then(state => {
-    if (state.valid) startHeartbeat(state.expiresAt);
+    if (state.valid) startHeartbeat(state.expiresAt || null);
   }).catch(() => {});
 }
 
 // ── Handle progress updates from content script ───────────────────────────────
-function handleExtractionProgress(message, sender) {
+/**
+ * @param {any} message
+ * @param {chrome.runtime.MessageSender} _sender
+ */
+function handleExtractionProgress(message, _sender) {
   if (!extractionSession.isExtracting) return;
   if (message.sessionId && message.sessionId !== extractionSession.sessionId) return;
 
@@ -594,7 +727,7 @@ function handleExtractionProgress(message, sender) {
   if (message.statusText) extractionSession.statusText = message.statusText;
   if (message.error) {
     extractionSession.totalFailed = (extractionSession.totalFailed || 0) + 1;
-    extractionSession.errors = [...(extractionSession.errors || []).slice(-9), message.error];
+    extractionSession.errors = [...(extractionSession.errors || []).slice(-9), String(message.error)];
   }
 
   if (message.complete) {
@@ -608,6 +741,11 @@ function handleExtractionProgress(message, sender) {
 }
 
 // ── URL-based extraction (opens tab in background) ────────────────────────────
+/**
+ * @param {string} url
+ * @param {string[]} [keywords]
+ * @returns {Promise<any[]>}
+ */
 async function extractFromUrl(url, keywords = []) {
   const access = await verifyLicenseNow({ broadcastOnFailure: true });
   if (!access.valid) {
@@ -615,13 +753,17 @@ async function extractFromUrl(url, keywords = []) {
   }
   try {
     const tab = await chrome.tabs.create({ url, active: false });
-    await waitForTabStatus(tab.id, 'complete');
-    const response = await chrome.tabs.sendMessage(tab.id, {
+    if (typeof tab.id !== 'number') {
+      throw new Error('Failed to create background tab');
+    }
+    const tabId = tab.id;
+    await waitForTabStatus(tabId, 'complete');
+    const response = await chrome.tabs.sendMessage(tabId, {
       action: 'extract',
       keywords,
       source: url
     });
-    await chrome.tabs.remove(tab.id).catch(() => { });
+    await chrome.tabs.remove(tabId).catch(() => { });
     return response?.leads || [];
   } catch (error) {
     console.error('[BG] URL extraction error:', error);
@@ -630,13 +772,23 @@ async function extractFromUrl(url, keywords = []) {
 }
 
 // ── Wait for a tab to reach a given status ───────────────────────────────────
+/**
+ * @param {number} tabId
+ * @param {string} [status]
+ * @param {number} [timeoutMs]
+ * @returns {Promise<void>}
+ */
 function waitForTabStatus(tabId, status = 'complete', timeoutMs = 30000) {
-  return new Promise((resolve, reject) => {
+  return new Promise((/** @type {(value?: void) => void} */ resolve, reject) => {
     const timer = setTimeout(() => {
       chrome.tabs.onUpdated.removeListener(listener);
       reject(new Error('Tab load timeout'));
     }, timeoutMs);
 
+    /**
+     * @param {number} updatedTabId
+     * @param {chrome.tabs.TabChangeInfo} info
+     */
     function listener(updatedTabId, info) {
       if (updatedTabId === tabId && info.status === status) {
         clearTimeout(timer);
@@ -650,6 +802,10 @@ function waitForTabStatus(tabId, status = 'complete', timeoutMs = 30000) {
 }
 
 // ── Open WhatsApp tab and send message ────────────────────────────────────────
+/**
+ * @param {string} url
+ * @returns {Promise<void>}
+ */
 async function openWhatsAppAndSend(url) {
   if (!url) throw new Error('WhatsApp URL is missing');
   const access = await verifyLicenseNow({ broadcastOnFailure: true });
@@ -659,24 +815,36 @@ async function openWhatsAppAndSend(url) {
 
   // Open the wa.me redirect URL
   const tab = await chrome.tabs.create({ url, active: true });
+  if (typeof tab.id !== 'number') {
+    throw new Error('Failed to open WhatsApp tab');
+  }
+  const tabId = tab.id;
 
   // wa.me redirects to web.whatsapp.com – wait for that to fully load
-  await waitForWhatsAppReady(tab.id);
+  await waitForWhatsAppReady(tabId);
 
   try {
-    await chrome.tabs.sendMessage(tab.id, { action: 'autoSendWhatsApp' });
+    await chrome.tabs.sendMessage(tabId, { action: 'autoSendWhatsApp' });
   } catch (error) {
     // Silently allow – WhatsApp was opened, auto-send may have minor issues
-    console.warn('[BG] WhatsApp auto-send warning:', error.message);
+    console.warn('[BG] WhatsApp auto-send warning:', getErrorMessage(error));
   }
 }
 
 // ── Wait until the WhatsApp chat page is fully ready ─────────────────────────
+/**
+ * @param {number} tabId
+ * @param {number} [timeoutMs]
+ * @returns {Promise<void>}
+ */
 async function waitForWhatsAppReady(tabId, timeoutMs = 45000) {
-  const start = Date.now();
-
   // Phase 1: wait for any redirect to settle (URL contains whatsapp.com)
-  await new Promise((resolve) => {
+  await new Promise((/** @type {(value?: void) => void} */ resolve) => {
+    /**
+     * @param {number} updatedTabId
+     * @param {chrome.tabs.TabChangeInfo} info
+     * @param {chrome.tabs.Tab} updatedTab
+     */
     function listener(updatedTabId, info, updatedTab) {
       if (updatedTabId !== tabId) return;
       if (
@@ -701,6 +869,10 @@ async function waitForWhatsAppReady(tabId, timeoutMs = 45000) {
   await delay(2500);
 }
 
+/**
+ * @param {number} ms
+ * @returns {Promise<void>}
+ */
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }

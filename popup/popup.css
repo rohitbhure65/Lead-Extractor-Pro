@@ -47,6 +47,9 @@
 
   --popup-w: 800px;
   --popup-h: 600px;
+  --popup-min-w: 800px;
+
+  --trans-fast: 0.15s ease;
 }
 
 html {

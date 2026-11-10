@@ -1,17 +1,33 @@
 // Map Leadify - Deduplication Logic
 
+/**
+ * @typedef {Object} DuplicateGroup
+ * @property {'email' | 'phone'} type
+ * @property {string} key
+ * @property {StoredLead[]} leads
+ */
+
 class Deduplicator {
   // Deduplicate leads by email, phone, or company+name
+  /**
+   * @param {StoredLead[]} leads
+   * @param {{ keepFirst?: boolean }} [options]
+   * @returns {StoredLead[]}
+   */
   static deduplicate(leads, options = {}) {
     const {
       keepFirst = true // Keep first or last occurrence
     } = options;
 
+    /** @type {Map<string, string>} */
     const seen = new Map();
+    /** @type {StoredLead[]} */
     const result = [];
 
     // Define deduplication keys in priority order
+    /** @param {StoredLead} lead */
     const getPrimaryKey = (lead) => lead.email?.toLowerCase().trim();
+    /** @param {StoredLead} lead */
     const getSecondaryKey = (lead) => lead.phone?.replace(/\D/g, '');
 
     for (const lead of leads) {
@@ -41,7 +57,7 @@ class Deduplicator {
 
       // Check company + name combination as tertiary
       if (!duplicate) {
-        const companyName = (lead.company + '_' + lead.name).toLowerCase().trim();
+        const companyName = ((lead.company || '') + '_' + (lead.name || '')).toLowerCase().trim();
         if (companyName !== '_') {
           if (seen.has('companyName:' + companyName)) {
             duplicate = true;
@@ -70,31 +86,41 @@ class Deduplicator {
   }
 
   // Get duplicate groups
+  /**
+   * @param {StoredLead[]} leads
+   * @returns {DuplicateGroup[]}
+   */
   static getDuplicateGroups(leads) {
+    /** @type {DuplicateGroup[]} */
     const groups = [];
-    const seen = new Map();
 
     // Group by email
+    /** @type {Map<string, StoredLead[]>} */
     const emailGroups = new Map();
     leads.forEach(lead => {
       const email = lead.email?.toLowerCase().trim();
       if (email) {
-        if (!emailGroups.has(email)) {
-          emailGroups.set(email, []);
+        let bucket = emailGroups.get(email);
+        if (!bucket) {
+          bucket = [];
+          emailGroups.set(email, bucket);
         }
-        emailGroups.get(email).push(lead);
+        bucket.push(lead);
       }
     });
 
     // Group by phone
+    /** @type {Map<string, StoredLead[]>} */
     const phoneGroups = new Map();
     leads.forEach(lead => {
       const phone = lead.phone?.replace(/\D/g, '');
       if (phone) {
-        if (!phoneGroups.has(phone)) {
-          phoneGroups.set(phone, []);
+        let bucket = phoneGroups.get(phone);
+        if (!bucket) {
+          bucket = [];
+          phoneGroups.set(phone, bucket);
         }
-        phoneGroups.get(phone).push(lead);
+        bucket.push(lead);
       }
     });
 
@@ -128,18 +154,22 @@ class Deduplicator {
   }
 
   // Merge duplicate leads, keeping most complete data
+  /**
+   * @param {StoredLead[]} leads
+   * @returns {StoredLead[]}
+   */
   static mergeDuplicates(leads) {
+    /** @type {Map<string, StoredLead>} */
     const primaryKeyMap = new Map();
 
     leads.forEach(lead => {
       const key = lead.email?.toLowerCase().trim() || lead.phone?.replace(/\D/g, '') || '';
       if (!key) return;
 
-      if (!primaryKeyMap.has(key)) {
+      const existing = primaryKeyMap.get(key);
+      if (!existing) {
         primaryKeyMap.set(key, lead);
       } else {
-        const existing = primaryKeyMap.get(key);
-
         // Merge non-empty fields
         existing.name = existing.name || lead.name;
         existing.company = existing.company || lead.company;
@@ -148,7 +178,7 @@ class Deduplicator {
         existing.address = existing.address || lead.address;
 
         // Keep most recent timestamp
-        if (lead.createdAt > existing.createdAt) {
+        if ((lead.createdAt || 0) > (existing.createdAt || 0)) {
           existing.createdAt = lead.createdAt;
         }
       }

@@ -37,17 +37,17 @@
 
         <div id="paidKeySection">
           <div class="form-field">
-            <input type="text" id="licenseKeyInput" placeholder="Enter Paid API Key or Trial Key (MLT-...)">
+            <input type="text" id="licenseKeyInput" aria-label="Paid API key or trial key" placeholder="Enter Paid API Key or Trial Key (MLT-...)">
           </div>
           <button type="button" id="activateLicenseBtn" class="btn-primary" style="width: 100%; margin-bottom: 10px;">Activate Now</button>
         </div>
 
         <div id="trialKeySection" style="display: none;">
           <div class="form-field">
-            <input type="text" id="trialKeyInput" placeholder="Enter Trial Key (e.g. MLT-...)">
+            <input type="text" id="trialKeyInput" aria-label="Trial key" placeholder="Enter Trial Key (e.g. MLT-...)">
           </div>
           <div class="form-field">
-            <input type="email" id="trialEmailInput" placeholder="Client Email (optional confirmation)">
+            <input type="email" id="trialEmailInput" aria-label="Client email address" placeholder="Client Email (optional confirmation)">
           </div>
           <button type="button" id="activateTrialBtn" class="btn-primary" style="width: 100%; margin-bottom: 10px;">Activate One-Time Trial</button>
           <p class="trial-policy-note">One-time trial only. Once expired or used, trials cannot be reactivated.</p>
@@ -84,10 +84,10 @@
       </header>
 
       <nav class="sidebar-nav">
-        <button class="nav-btn active" id="navExtract" data-panel="extractPanel">
+        <button type="button" class="nav-btn active" id="navExtract" data-panel="extractPanel">
           <span class="nav-icon">🔍</span> Extract
         </button>
-        <button class="nav-btn" id="navTemplates" data-panel="templatesPanel">
+        <button type="button" class="nav-btn" id="navTemplates" data-panel="templatesPanel">
           <span class="nav-icon">💬</span> Templates
         </button>
       </nav>
@@ -141,9 +141,9 @@
             <!-- WhatsApp Template (quick access) -->
             <div class="setting-item" style="margin-bottom:8px;">
               <div class="wa-template-header">
-                <label for="whatsAppMessageInput">WhatsApp Message</label>
+                <label for="templateQuickSelect">WhatsApp Message</label>
                 <div class="wa-template-controls">
-                  <select id="templateQuickSelect" class="template-quick-select" title="Switch template">
+                  <select id="templateQuickSelect" aria-label="WhatsApp template" class="template-quick-select" title="Switch template">
                     <!-- Populated by JS -->
                   </select>
                   <button type="button" class="tpl-manage-btn" id="openTemplatesPanel" title="Manage templates">⚙</button>
@@ -152,19 +152,19 @@
             </div>
 
             <div class="action-group">
-              <button class="btn-primary" id="startExtraction">
+              <button type="button" class="btn-primary" id="startExtraction">
                 <span class="btn-icon btn-icon-start">▶</span>
                 <div class="spinner" id="extractionSpinner" style="display:none;"></div>
                 <span class="btn-text" id="startExtractionText">Start Discovery</span>
               </button>
-              <button class="btn-danger-sm hidden" id="stopExtraction">
+              <button type="button" class="btn-danger-sm hidden" id="stopExtraction">
                 ⏹ Stop
               </button>
             </div>
 
             <div class="action-group-sm">
               <!-- Deduplicate is now automatic on save -->
-              <button class="btn-save" id="saveAllLeads" title="Save all extracted leads">
+              <button type="button" class="btn-save" id="saveAllLeads" title="Save all extracted leads">
                 <span class="icon">💾</span> Save
               </button>
             </div>
@@ -218,7 +218,7 @@
           <section class="templates-section">
             <div class="section-header-row">
               <div class="section-title">WhatsApp Templates</div>
-              <button class="btn-icon-sm" id="addTemplateBtn" title="Add new template">＋</button>
+              <button type="button" class="btn-icon-sm" id="addTemplateBtn" title="Add new template">＋</button>
             </div>
 
             <div id="templatesList" class="templates-list">
@@ -250,8 +250,8 @@
                 <textarea id="templateBodyInput" rows="6" placeholder="Hi {{name}}, I noticed..."></textarea>
               </div>
               <div class="editor-actions">
-                <button class="btn-primary btn-sm" id="saveTemplateBtn">Save</button>
-                <button class="btn-outline btn-sm" id="cancelTemplateBtn">Cancel</button>
+                <button type="button" class="btn-primary btn-sm" id="saveTemplateBtn">Save</button>
+                <button type="button" class="btn-outline btn-sm" id="cancelTemplateBtn">Cancel</button>
               </div>
             </div>
           </section>
@@ -268,15 +268,15 @@
     <main class="main-content">
       <header class="content-header">
         <div class="tabs">
-          <button class="tab active" id="tabExtracted">
+          <button type="button" class="tab active" id="tabExtracted">
             Extracted <span class="tab-badge" id="extractedBadge">0</span>
           </button>
-          <button class="tab" id="tabSaved">
+          <button type="button" class="tab" id="tabSaved">
             Saved <span class="tab-badge" id="savedBadge">0</span>
           </button>
         </div>
         <div class="header-actions">
-          <button class="btn-icon-only" id="refreshLeads" title="Refresh leads">⟳</button>
+          <button type="button" class="btn-icon-only" id="refreshLeads" title="Refresh leads">⟳</button>
         </div>
       </header>
 
@@ -286,10 +286,10 @@
           <div class="toolbar">
             <div class="search-box">
               <span class="search-icon">🔍</span>
-              <input type="text" id="searchInput" placeholder="Search leads…">
-              <button class="clear-search hidden" id="clearSearch" title="Clear search">✕</button>
+              <input type="text" id="searchInput" aria-label="Search extracted leads" placeholder="Search leads…">
+              <button type="button" class="clear-search hidden" id="clearSearch" title="Clear search">✕</button>
             </div>
-            <select id="filterSelect" class="filter-dropdown">
+            <select id="filterSelect" aria-label="Filter extracted leads" class="filter-dropdown">
               <option value="all">All</option>
               <option value="email">Has Email</option>
               <option value="phone">Has Phone</option>
@@ -314,8 +314,8 @@
           <div class="toolbar">
             <div class="search-box">
               <span class="search-icon">🔍</span>
-              <input type="text" id="savedSearchInput" placeholder="Search saved leads…">
-              <button class="clear-search hidden" id="clearSavedSearch" title="Clear search">✕</button>
+              <input type="text" id="savedSearchInput" aria-label="Search saved leads" placeholder="Search saved leads…">
+              <button type="button" class="clear-search hidden" id="clearSavedSearch" title="Clear search">✕</button>
             </div>
           </div>
           <div class="saved-list" id="savedList">
@@ -329,13 +329,13 @@
 
       <!-- Sticky Footer Actions -->
       <footer class="export-footer">
-        <button class="btn-export csv" id="exportCSV">
+        <button type="button" class="btn-export csv" id="exportCSV">
           <span class="icon">📥</span> CSV
         </button>
-        <button class="btn-export excel" id="exportExcel">
+        <button type="button" class="btn-export excel" id="exportExcel">
           <span class="icon">📊</span> Excel
         </button>
-        <button class="btn-danger-link" id="clearAll">
+        <button type="button" class="btn-danger-link" id="clearAll">
           <span class="icon">🗑</span> Clear All
         </button>
       </footer>
@@ -349,20 +349,20 @@
     <div class="modal-card">
       <div class="modal-header">
         <h2>Add New Lead</h2>
-        <button class="close-modal" id="closeModal">&times;</button>
+        <button type="button" class="close-modal" id="closeModal" aria-label="Close modal">&times;</button>
       </div>
       <form id="addLeadForm" class="modal-form">
         <div class="form-row">
-          <div class="form-field"><label>Name</label><input type="text" name="name" required></div>
-          <div class="form-field"><label>Email</label><input type="email" name="email"></div>
+          <div class="form-field"><label for="addLeadName">Name</label><input type="text" id="addLeadName" name="name" required></div>
+          <div class="form-field"><label for="addLeadEmail">Email</label><input type="email" id="addLeadEmail" name="email"></div>
         </div>
         <div class="form-row">
-          <div class="form-field"><label>Phone</label><input type="tel" name="phone"></div>
-          <div class="form-field"><label>Company</label><input type="text" name="company"></div>
+          <div class="form-field"><label for="addLeadPhone">Phone</label><input type="tel" id="addLeadPhone" name="phone"></div>
+          <div class="form-field"><label for="addLeadCompany">Company</label><input type="text" id="addLeadCompany" name="company"></div>
         </div>
-        <div class="form-field"><label>Job Title</label><input type="text" name="jobTitle"></div>
-        <div class="form-field"><label>Website</label><input type="url" name="website" placeholder="https://"></div>
-        <div class="form-field"><label>Address</label><input type="text" name="address"></div>
+        <div class="form-field"><label for="addLeadJobTitle">Job Title</label><input type="text" id="addLeadJobTitle" name="jobTitle"></div>
+        <div class="form-field"><label for="addLeadWebsite">Website</label><input type="url" id="addLeadWebsite" name="website" placeholder="https://"></div>
+        <div class="form-field"><label for="addLeadAddress">Address</label><input type="text" id="addLeadAddress" name="address"></div>
         <button type="submit" class="btn-submit">Add Lead</button>
       </form>
     </div>
@@ -373,21 +373,21 @@
     <div class="modal-card">
       <div class="modal-header">
         <h2>Edit Lead</h2>
-        <button class="close-modal" id="closeEditModal">&times;</button>
+        <button type="button" class="close-modal" id="closeEditModal" aria-label="Close edit modal">&times;</button>
       </div>
       <form id="editLeadForm" class="modal-form">
-        <input type="hidden" name="id">
+        <input type="hidden" id="editLeadId" name="id">
         <div class="form-row">
-          <div class="form-field"><label>Name</label><input type="text" name="name" required></div>
-          <div class="form-field"><label>Email</label><input type="email" name="email"></div>
+          <div class="form-field"><label for="editLeadName">Name</label><input type="text" id="editLeadName" name="name" required></div>
+          <div class="form-field"><label for="editLeadEmail">Email</label><input type="email" id="editLeadEmail" name="email"></div>
         </div>
         <div class="form-row">
-          <div class="form-field"><label>Phone</label><input type="tel" name="phone"></div>
-          <div class="form-field"><label>Company</label><input type="text" name="company"></div>
+          <div class="form-field"><label for="editLeadPhone">Phone</label><input type="tel" id="editLeadPhone" name="phone"></div>
+          <div class="form-field"><label for="editLeadCompany">Company</label><input type="text" id="editLeadCompany" name="company"></div>
         </div>
-        <div class="form-field"><label>Job Title</label><input type="text" name="jobTitle"></div>
-        <div class="form-field"><label>Website</label><input type="url" name="website" placeholder="https://"></div>
-        <div class="form-field"><label>Address</label><input type="text" name="address"></div>
+        <div class="form-field"><label for="editLeadJobTitle">Job Title</label><input type="text" id="editLeadJobTitle" name="jobTitle"></div>
+        <div class="form-field"><label for="editLeadWebsite">Website</label><input type="url" id="editLeadWebsite" name="website" placeholder="https://"></div>
+        <div class="form-field"><label for="editLeadAddress">Address</label><input type="text" id="editLeadAddress" name="address"></div>
         <button type="submit" class="btn-submit">Update Lead</button>
       </form>
     </div>
@@ -398,7 +398,7 @@
     <div class="modal-card wide">
       <div class="modal-header">
         <h2>Lead Details</h2>
-        <button class="close-modal" id="closeSavedLeadViewModal">&times;</button>
+        <button type="button" class="close-modal" id="closeSavedLeadViewModal" aria-label="Close lead details modal">&times;</button>
       </div>
       <div id="savedLeadViewContent" class="modal-body"></div>
     </div>
@@ -415,8 +415,8 @@
       </div>
       <p class="confirm-message" id="confirmMessage"></p>
       <div class="confirm-actions">
-        <button class="btn-danger btn-sm" id="confirmOk">Confirm</button>
-        <button class="btn-outline btn-sm" id="confirmCancel">Cancel</button>
+        <button type="button" class="btn-danger btn-sm" id="confirmOk">Confirm</button>
+        <button type="button" class="btn-outline btn-sm" id="confirmCancel">Cancel</button>
       </div>
     </div>
   </div>

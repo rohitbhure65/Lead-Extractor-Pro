@@ -1,14 +1,51 @@
 // Map Leadify - Storage Layer (IndexedDB + chrome.storage.local)
 
-class Storage {
+/**
+ * @typedef {Object} WhatsAppTemplate
+ * @property {string} id
+ * @property {string} name
+ * @property {string} body
+ * @property {number} [createdAt]
+ * @property {number} [updatedAt]
+ */
+
+/**
+ * @typedef {Object} StoredLead
+ * @property {string} id
+ * @property {string} [name]
+ * @property {string} [email]
+ * @property {string} [phone]
+ * @property {string} [company]
+ * @property {string} [jobTitle]
+ * @property {string} [website]
+ * @property {string} [address]
+ * @property {string} [category]
+ * @property {string} [rating]
+ * @property {string} [reviews]
+ * @property {string} [status]
+ * @property {string} [priceRange]
+ * @property {string} [services]
+ * @property {string} [hours]
+ * @property {string} [rawData]
+ * @property {string} [type]
+ * @property {boolean} [contacted]
+ * @property {number | null} [contactedAt]
+ * @property {number} [createdAt]
+ * @property {number} [updatedAt]
+ * @property {string} [source]
+ */
+
+class LeadStorage {
   static DB_NAME = 'LeadExtractorDB';
   static DB_VERSION = 1;
   static STORE_NAME = 'leads';
+  /** @type {IDBDatabase | null} */
   static db = null;
 
   // ── Database Init ───────────────────────────────────────────────────────────
+  /** @returns {Promise<void>} */
   static async init() {
-    return new Promise((resolve, reject) => {
+    return new Promise((/** @type {(value?: void) => void} */ resolve, reject) => {
       const request = indexedDB.open(this.DB_NAME, this.DB_VERSION);
 
       request.onerror = () => reject(request.error);
@@ -19,7 +56,9 @@ class Storage {
       };
 
       request.onupgradeneeded = (event) => {
-        const db = event.target.result;
+        const target = /** @type {IDBOpenDBRequest | null} */ (event.target);
+        const db = target?.result;
+        if (!db) return;
 
         if (!db.objectStoreNames.contains(this.STORE_NAME)) {
           const store = db.createObjectStore(this.STORE_NAME, { keyPath: 'id' });
@@ -32,26 +71,42 @@ class Storage {
     });
   }
 
+  /** @returns {Promise<IDBDatabase>} */
   static async ensureDB() {
     if (!this.db) await this.init();
+    if (!this.db) throw new Error('IndexedDB not initialized');
+    return this.db;
   }
 
   // ── chrome.storage.local helpers ────────────────────────────────────────────
+  /**
+   * @param {string} key
+   * @returns {Promise<any>}
+   */
   static async get(key) {
     return new Promise((resolve) => {
       chrome.storage.local.get(key, (result) => resolve(result[key]));
     });
   }
 
+  /**
+   * @param {string} key
+   * @param {any} value
+   * @returns {Promise<void>}
+   */
   static async set(key, value) {
-    return new Promise((resolve) => {
-      chrome.storage.local.set({ [key]: value }, resolve);
+    return new Promise((/** @type {(value?: void) => void} */ resolve) => {
+      chrome.storage.local.set({ [key]: value }, () => resolve());
     });
   }
 
+  /**
+   * @param {string} key
+   * @returns {Promise<void>}
+   */
   static async remove(key) {
-    return new Promise((resolve) => {
-      chrome.storage.local.remove(key, resolve);
+    return new Promise((/** @type {(value?: void) => void} */ resolve) => {
+      chrome.storage.local.remove(key, () => resolve());
     });
   }
 
@@ -59,23 +114,37 @@ class Storage {
   static TEMPLATES_KEY = 'whatsappTemplates';
   static DEFAULT_TEMPLATE_KEY = 'defaultTemplateId';
 
+  /** @returns {Promise<WhatsAppTemplate[]>} */
   static async getTemplates() {
     const templates = await this.get(this.TEMPLATES_KEY);
     return Array.isArray(templates) ? templates : [];
   }
 
+  /**
+   * @param {WhatsAppTemplate[]} templates
+   * @returns {Promise<void>}
+   */
   static async saveTemplates(templates) {
     await this.set(this.TEMPLATES_KEY, templates);
   }
 
+  /** @returns {Promise<string | null | undefined>} */
   static async getDefaultTemplateId() {
     return await this.get(this.DEFAULT_TEMPLATE_KEY);
   }
 
+  /**
+   * @param {string | null} id
+   * @returns {Promise<void>}
+   */
   static async setDefaultTemplateId(id) {
     await this.set(this.DEFAULT_TEMPLATE_KEY, id);
   }
 
+  /**
+   * @param {WhatsAppTemplate} template
+   * @returns {Promise<WhatsAppTemplate[]>}
+   */
   static async addTemplate(template) {
     const templates = await this.getTemplates();
     templates.push(template);
@@ -87,6 +156,10 @@ class Storage {
     return templates;
   }
 
+  /**
+   * @param {WhatsAppTemplate} updatedTemplate
+   * @returns {Promise<WhatsAppTemplate[]>}
+   */
   static async updateTemplate(updatedTemplate) {
     const templates = await this.getTemplates();
     const index = templates.findIndex(t => t.id === updatedTemplate.id);
@@ -95,6 +168,10 @@ class Storage {
     return templates;
   }
 
+  /**
+   * @param {string} id
+   * @returns {Promise<WhatsAppTemplate[]>}
+   */
   static async deleteTemplate(id) {
     let templates = await this.getTemplates();
     templates = templates.filter(t => t.id !== id);
@@ -110,10 +187,14 @@ class Storage {
   }
 
   // ── Lead CRUD ───────────────────────────────────────────────────────────────
+  /**
+   * @param {StoredLead} lead
+   * @returns {Promise<void>}
+   */
   static async addLead(lead) {
-    await this.ensureDB();
-    return new Promise((resolve, reject) => {
-      const tx = this.db.transaction([this.STORE_NAME], 'readwrite');
+    const db = await this.ensureDB();
+    return new Promise((/** @type {(value?: void) => void} */ resolve, reject) => {
+      const tx = db.transaction([this.STORE_NAME], 'readwrite');
       const store = tx.objectStore(this.STORE_NAME);
       const request = store.add(lead);
       request.onsuccess = () => resolve();
@@ -128,10 +209,11 @@ class Storage {
     });
   }
 
+  /** @returns {Promise<StoredLead[]>} */
   static async getAllLeads() {
-    await this.ensureDB();
+    const db = await this.ensureDB();
     return new Promise((resolve, reject) => {
-      const tx = this.db.transaction([this.STORE_NAME], 'readonly');
+      const tx = db.transaction([this.STORE_NAME], 'readonly');
       const store = tx.objectStore(this.STORE_NAME);
       const request = store.getAll();
       request.onsuccess = () => resolve(request.result || []);
@@ -139,10 +221,14 @@ class Storage {
     });
   }
 
+  /**
+   * @param {string} id
+   * @returns {Promise<StoredLead | undefined>}
+   */
   static async getLead(id) {
-    await this.ensureDB();
+    const db = await this.ensureDB();
     return new Promise((resolve, reject) => {
-      const tx = this.db.transaction([this.STORE_NAME], 'readonly');
+      const tx = db.transaction([this.STORE_NAME], 'readonly');
       const store = tx.objectStore(this.STORE_NAME);
       const request = store.get(id);
       request.onsuccess = () => resolve(request.result);
@@ -150,10 +236,14 @@ class Storage {
     });
   }
 
+  /**
+   * @param {StoredLead} lead
+   * @returns {Promise<void>}
+   */
   static async updateLead(lead) {
-    await this.ensureDB();
-    return new Promise((resolve, reject) => {
-      const tx = this.db.transaction([this.STORE_NAME], 'readwrite');
+    const db = await this.ensureDB();
+    return new Promise((/** @type {(value?: void) => void} */ resolve, reject) => {
+      const tx = db.transaction([this.STORE_NAME], 'readwrite');
       const store = tx.objectStore(this.STORE_NAME);
       const request = store.put(lead);
       request.onsuccess = () => resolve();
@@ -161,10 +251,14 @@ class Storage {
     });
   }
 
+  /**
+   * @param {string} id
+   * @returns {Promise<void>}
+   */
   static async deleteLead(id) {
-    await this.ensureDB();
-    return new Promise((resolve, reject) => {
-      const tx = this.db.transaction([this.STORE_NAME], 'readwrite');
+    const db = await this.ensureDB();
+    return new Promise((/** @type {(value?: void) => void} */ resolve, reject) => {
+      const tx = db.transaction([this.STORE_NAME], 'readwrite');
       const store = tx.objectStore(this.STORE_NAME);
       const request = store.delete(id);
       request.onsuccess = () => resolve();
@@ -172,10 +266,11 @@ class Storage {
     });
   }
 
+  /** @returns {Promise<void>} */
   static async clearAllLeads() {
-    await this.ensureDB();
-    return new Promise((resolve, reject) => {
-      const tx = this.db.transaction([this.STORE_NAME], 'readwrite');
+    const db = await this.ensureDB();
+    return new Promise((/** @type {(value?: void) => void} */ resolve, reject) => {
+      const tx = db.transaction([this.STORE_NAME], 'readwrite');
       const store = tx.objectStore(this.STORE_NAME);
       const request = store.clear();
       request.onsuccess = () => resolve();
@@ -183,10 +278,11 @@ class Storage {
     });
   }
 
+  /** @returns {Promise<number>} */
   static async getCount() {
-    await this.ensureDB();
+    const db = await this.ensureDB();
     return new Promise((resolve, reject) => {
-      const tx = this.db.transaction([this.STORE_NAME], 'readonly');
+      const tx = db.transaction([this.STORE_NAME], 'readonly');
       const store = tx.objectStore(this.STORE_NAME);
       const request = store.count();
       request.onsuccess = () => resolve(request.result);
@@ -196,4 +292,4 @@ class Storage {
 }
 
 // Initialize storage on load
-Storage.init().catch(console.error);
+LeadStorage.init().catch(console.error);

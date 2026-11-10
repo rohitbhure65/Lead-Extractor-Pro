@@ -1,6 +1,36 @@
 // Map Leadify - Content Script
 // Injected into pages for lead extraction
 
+/**
+ * @typedef {Object} ContentLead
+ * @property {string} name
+ * @property {string} phone
+ * @property {string} company
+ * @property {string} category
+ * @property {string} rating
+ * @property {string} reviews
+ * @property {string} website
+ * @property {string} address
+ * @property {string} status
+ * @property {string} priceRange
+ * @property {string} services
+ * @property {string} hours
+ * @property {string} [email]
+ * @property {string} [jobTitle]
+ * @property {string} [rawData]
+ * @property {string} [source]
+ */
+
+/** @typedef {Partial<ContentLead>} RawContentLead */
+
+/**
+ * @typedef {Object} ExtractionOptions
+ * @property {number | null} [maxLeads]
+ * @property {boolean} [noLimit]
+ * @property {boolean} [requirePhone]
+ */
+
+/** @type {{ sessionId: string | null, isRunning: boolean, stopRequested: boolean }} */
 const extractionState = {
   sessionId: null,
   isRunning: false,
@@ -30,13 +60,13 @@ const extractionState = {
   }
 })();
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.action === 'extract') {
     handleExtractionRequest(message)
       .then(sendResponse)
       .catch((error) => {
         console.error('Extraction error:', error);
-        sendResponse({ error: error.message, leads: [] });
+        sendResponse({ error: error instanceof Error ? error.message : String(error), leads: [] });
       });
 
     return true;
@@ -54,7 +84,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'autoSendWhatsApp') {
     autoSendWhatsAppMessage()
       .then(() => sendResponse({ sent: true }))
-      .catch((error) => sendResponse({ error: error.message }));
+      .catch((error) => sendResponse({ error: error instanceof Error ? error.message : String(error) }));
 
     return true;
   }
@@ -75,7 +105,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return false;
 });
 
+/** @returns {ContentLead[]} */
 function extractAllCurrentPageLeads() {
+  /** @type {ContentLead[]} */
   const allLeads = [];
   const source = document.title.slice(0, 100);
 
@@ -85,7 +117,9 @@ function extractAllCurrentPageLeads() {
     const cards = getGoogleMapsResultCards();
     if (cards.length > 0) {
       console.log(`[SAVE CURRENT] Found ${cards.length} cards on Maps search`);
-      const listLeads = cards.map(card => extractGoogleMapsCardLead(card)).filter(Boolean);
+      const listLeads = cards
+        .map(card => extractGoogleMapsCardLead(card))
+        .filter(/** @param {ContentLead | null} l @returns {l is ContentLead} */ (l) => l !== null);
       listLeads.forEach(l => l.source = `Google Maps List - ${source}`);
       allLeads.push(...listLeads);
     }
@@ -159,6 +193,7 @@ async function autoSendWhatsAppMessage() {
   throw new Error('WhatsApp send button not ready within timeout');
 }
 
+/** @returns {HTMLButtonElement | null} */
 function findWhatsAppSendButton() {
   const selectors = [
     'button[aria-label="Send"]',
@@ -174,7 +209,7 @@ function findWhatsAppSendButton() {
       continue;
     }
 
-    if (el.tagName === 'BUTTON') {
+    if (el instanceof HTMLButtonElement) {
       return el;
     }
 
@@ -187,10 +222,14 @@ function findWhatsAppSendButton() {
   return null;
 }
 
+/**
+ * @param {any} message
+ * @returns {Promise<{ leads: ContentLead[], savedCount: number, stopped: boolean }>}
+ */
 async function handleExtractionRequest(message) {
   // License check
   const isLicensed = await new Promise(resolve => {
-    chrome.runtime.sendMessage({ action: 'getLicenseState' }, state => resolve(state && state.valid));
+    chrome.runtime.sendMessage({ action: 'getLicenseState' }, (state) => resolve(Boolean(state && state.valid)));
   });
 
   if (!isLicensed) {
@@ -201,6 +240,7 @@ async function handleExtractionRequest(message) {
   extractionState.sessionId = sessionId;
   extractionState.isRunning = true;
   extractionState.stopRequested = false;
+  /** @type {ExtractionOptions} */
   const options = message.options || {};
 
   try {
@@ -224,7 +264,13 @@ async function handleExtractionRequest(message) {
   }
 }
 
+/**
+ * @param {string[]} [keywords]
+ * @param {ExtractionOptions} [options]
+ * @returns {ContentLead[]}
+ */
 function extractStandardLeads(keywords = [], options = {}) {
+  /** @type {RawContentLead[]} */
   const leads = [];
 
   leads.push(...extractFromContactLinks());
@@ -244,6 +290,11 @@ function extractStandardLeads(keywords = [], options = {}) {
 
 // FIXED: More lenient filter for Google Maps business listings
 // Accept ANY business card with basic identification data
+/**
+ * @param {RawContentLead} lead
+ * @param {ExtractionOptions} [options]
+ * @returns {boolean}
+ */
 function matchesLeadRequirements(lead, options = {}) {
   const requirePhone = options.requirePhone || false;
 
@@ -279,9 +330,14 @@ function matchesLeadRequirements(lead, options = {}) {
   return true;
 }
 
+/**
+ * @param {{ keywords?: string[], sessionId: string, options?: ExtractionOptions }} params
+ * @returns {Promise<{ leads: ContentLead[], savedCount: number, stopped: boolean }>}
+ */
 async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }) {
   const maxLeads = options.noLimit ? null : parsePositiveInt(options.maxLeads);
   const seen = new Set();
+  /** @type {ContentLead[]} */
   const bufferedLeads = [];
 
   // Wait for page to be fully loaded
@@ -316,7 +372,7 @@ async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }
           console.log(`[EXTRACT] Card ${index}:`, lead);
         }
         return lead;
-      }).filter(Boolean);
+      }).filter(/** @param {ContentLead | null} l @returns {l is ContentLead} */ (l) => l !== null);
 
       console.log(`[EXTRACT] Raw extracted: ${extracted.length} leads`);
 
@@ -422,6 +478,10 @@ async function extractGoogleMapsLeads({ keywords = [], sessionId, options = {} }
 }
 
 // NEW: Enhanced auto-scroll function with proper detection
+/**
+ * @param {HTMLElement} container
+ * @param {{ maxAttempts?: number, scrollDelay?: number, debug?: boolean }} [options]
+ */
 async function enhancedAutoScroll(container, options = {}) {
   const {
     maxAttempts = 1000,
@@ -434,6 +494,7 @@ async function enhancedAutoScroll(container, options = {}) {
   let noChangeCount = 0;
   let consecutiveNoCards = 0;
 
+  /** @type {(...args: any[]) => void} */
   const log = debug ? (...args) => console.log('[AUTO-SCROLL]', ...args) : () => { };
 
   log('Starting enhanced auto-scroll');
@@ -521,25 +582,28 @@ async function enhancedAutoScroll(container, options = {}) {
 }
 
 // NEW: Find "More results" button
+/** @returns {HTMLElement | null} */
 function findMoreResultsButton() {
   const selectors = [
     'button[aria-label="More results"]',
-    'button:contains("More results")',
-    'div[role="button"]:contains("More results")',
     'button[jsaction*="moreResults"]'
   ];
 
   for (const selector of selectors) {
-    const button = document.querySelector(selector);
-    if (button && button.offsetParent !== null) {
-      return button;
+    try {
+      const button = document.querySelector(selector);
+      if (button instanceof HTMLElement && button.offsetParent !== null) {
+        return button;
+      }
+    } catch {
+      // Ignore invalid/unsupported CSS selectors
     }
   }
 
   // Find by text content
   const buttons = document.querySelectorAll('button, div[role="button"]');
   for (const button of buttons) {
-    if (button.textContent.toLowerCase().includes('more results')) {
+    if (button instanceof HTMLElement && button.textContent && button.textContent.toLowerCase().includes('more results')) {
       return button;
     }
   }
@@ -586,6 +650,10 @@ async function waitForGoogleMapsReady() {
 }
 
 // ENHANCED: Extract more data from Google Maps card
+/**
+ * @param {HTMLElement} card
+ * @returns {ContentLead | null}
+ */
 function extractGoogleMapsCardLead(card) {
   // Trigger animation on the card
   if (card && card.classList) {
@@ -628,7 +696,8 @@ function extractGoogleMapsCardLead(card) {
   const phoneMatch = text.match(/(?:\+?\d{1,4}[\s\-.()]{0,3})?(?:\d[\s\-.()]{0,3}){9,15}/);
 
   // Extract website
-  const website = card.querySelector('a[href^="http"]:not([href*="google.com"])')?.href || '';
+  const websiteLink = card.querySelector('a[href^="http"]:not([href*="google.com"])');
+  const website = websiteLink instanceof HTMLAnchorElement ? websiteLink.href : '';
 
   // Extract address with better detection
   const addressLine = lines.find((line) =>
@@ -653,6 +722,7 @@ function extractGoogleMapsCardLead(card) {
   const priceRange = priceMatch ? priceMatch[0] : '';
 
   // Extract additional info like "In-store pickup", "Delivery", etc.
+  /** @type {string[]} */
   const services = [];
   const serviceKeywords = ['delivery', 'pickup', 'dine-in', 'takeout', 'reservation', 'curbside'];
   serviceKeywords.forEach(service => {
@@ -689,6 +759,7 @@ function extractGoogleMapsCardLead(card) {
 }
 
 // ENHANCED: Get all result cards with better selection
+/** @returns {HTMLElement[]} */
 function getGoogleMapsResultCards() {
   const selectorList = [
     '.Nv2PK', // Primary selector
@@ -705,6 +776,7 @@ function getGoogleMapsResultCards() {
     '.search-results .result'
   ];
 
+  /** @type {HTMLElement[]} */
   const cards = [];
   const seen = new Set();
 
@@ -717,6 +789,10 @@ function getGoogleMapsResultCards() {
           node.closest('.THOPZb') ||
           node.closest('[role="feed"] > div') ||
           node;
+
+        if (!(card instanceof HTMLElement)) {
+          return;
+        }
 
         const text = normalizeWhitespace(card.innerText || '');
         if (!text || text.length < 3) {
@@ -747,6 +823,10 @@ function getGoogleMapsResultCards() {
 }
 
 // ENHANCED: Check if reached end of results
+/**
+ * @param {HTMLElement | null | undefined} container
+ * @returns {boolean}
+ */
 function hasReachedGoogleMapsResultsEnd(container) {
   if (!container) {
     return true;
@@ -787,16 +867,24 @@ function hasReachedGoogleMapsResultsEnd(container) {
   return noCards ? nearBottom : false;
 }
 
+/** @returns {ContentLead | null} */
 function extractSelectedGoogleMapsPlace() {
-  const panel = document.querySelector('div[role="main"]') || document;
+  const panelEl = document.querySelector('div[role="main"]');
+  /** @type {ParentNode} */
+  const panel = panelEl || document;
   const name = pickText(panel, ['h1.DUwDvf', 'h1.fontHeadlineLarge', 'h1']);
+  const authLink = panel.querySelector('a[data-item-id="authority"]');
+  const ariaWebsiteLink = panel.querySelector('a[aria-label*="Website"]');
   const website =
-    panel.querySelector('a[data-item-id="authority"]')?.href ||
-    panel.querySelector('a[aria-label*="Website"]')?.href ||
+    (authLink instanceof HTMLAnchorElement ? authLink.href : '') ||
+    (ariaWebsiteLink instanceof HTMLAnchorElement ? ariaWebsiteLink.href : '') ||
     '';
   const address = pickDataItemText(panel, ['address']) || pickLabelValue(panel, ['address']);
   const phone = pickDataItemText(panel, ['phone']) || pickLabelValue(panel, ['phone', 'call']);
-  const text = normalizeWhitespace(panel.innerText || '');
+  const rawPanelText = panel instanceof HTMLElement
+    ? (panel.innerText || '')
+    : (panel instanceof Document ? (panel.body?.innerText || '') : '');
+  const text = normalizeWhitespace(rawPanelText);
   const ratingMatch = text.match(/(\d\.\d)\s*★?/);
   const reviewsMatch = text.match(/\(([\d,]+)\)/);
 
@@ -820,6 +908,7 @@ function extractSelectedGoogleMapsPlace() {
   });
 }
 
+/** @returns {HTMLElement} */
 function findGoogleMapsScrollContainer() {
   // Enhanced container selectors for current Google Maps
   const selectors = [
@@ -838,7 +927,7 @@ function findGoogleMapsScrollContainer() {
 
   for (const selector of selectors) {
     const container = document.querySelector(selector);
-    if (container && isScrollableContainer(container)) {
+    if (container instanceof HTMLElement && isScrollableContainer(container)) {
       console.log('[SCROLL] Found container:', selector);
       return container;
     }
@@ -846,6 +935,7 @@ function findGoogleMapsScrollContainer() {
 
   // Fallback: find any scrollable container with cards
   const cards = getGoogleMapsResultCards();
+  /** @type {Set<HTMLElement>} */
   const candidates = new Set();
 
   cards.slice(0, 5).forEach((card) => {
@@ -872,6 +962,10 @@ function findGoogleMapsScrollContainer() {
   return container || document.body; // Never return null - use body as last resort
 }
 
+/**
+ * @param {HTMLElement | null | undefined} container
+ * @returns {Promise<{ hasNewCards: boolean, reachedEnd: boolean }>}
+ */
 async function loadMoreGoogleMapsResults(container) {
   if (!container) return { hasNewCards: false, reachedEnd: true };
 
@@ -893,6 +987,10 @@ async function loadMoreGoogleMapsResults(container) {
   return { hasNewCards: hasNew, reachedEnd };
 }
 
+/**
+ * @param {Element | null | undefined} el
+ * @returns {boolean}
+ */
 function isScrollableContainer(el) {
   if (!el) {
     return false;
@@ -905,6 +1003,10 @@ function isScrollableContainer(el) {
   return hasScroll && canScroll;
 }
 
+/**
+ * @param {Element} el
+ * @returns {number}
+ */
 function scoreScrollContainer(el) {
   const rect = el.getBoundingClientRect();
   const cardCount = el.querySelectorAll('[role="article"], .Nv2PK, .THOPZb').length;
@@ -916,6 +1018,10 @@ function scoreScrollContainer(el) {
   return leftSidebarBonus + feedBonus + visibleHeightBonus + (el.scrollHeight - el.clientHeight) + (cardCount * 200) - widthPenalty;
 }
 
+/**
+ * @param {HTMLElement | null | undefined} card
+ * @returns {string}
+ */
 function buildCardSnapshotKey(card) {
   if (!card) {
     return '';
@@ -924,6 +1030,11 @@ function buildCardSnapshotKey(card) {
   return normalizeWhitespace(card.innerText || '').slice(0, 160);
 }
 
+/**
+ * @param {HTMLElement | null | undefined} container
+ * @param {{ previousCardCount?: number, previousLastCardKey?: string }} [previousState]
+ * @returns {Promise<{ hasNewCards: boolean, reachedEnd: boolean }>}
+ */
 async function waitForGoogleMapsResultsChange(container, previousState = {}) {
   const timeoutMs = 3500;
   const pollMs = 250;
@@ -950,10 +1061,18 @@ async function waitForGoogleMapsResultsChange(container, previousState = {}) {
   return { hasNewCards: false, reachedEnd: hasReachedGoogleMapsResultsEnd(container) };
 }
 
+/**
+ * @param {Element} el
+ * @returns {boolean}
+ */
 function containsResultCards(el) {
   return el.querySelectorAll('[role="article"], .Nv2PK, .THOPZb').length > 0;
 }
 
+/**
+ * @param {Element} el
+ * @returns {boolean}
+ */
 function isLikelyLeftSidebar(el) {
   const rect = el.getBoundingClientRect();
 
@@ -968,6 +1087,9 @@ function isLikelyLeftSidebar(el) {
   return startsOnLeftSide && notTooWide && tallEnough;
 }
 
+/**
+ * @param {Record<string, any>} payload
+ */
 async function reportExtractionProgress(payload) {
   try {
     // Send to background – background will update its state and forward to popup
@@ -977,12 +1099,18 @@ async function reportExtractionProgress(payload) {
     });
   } catch (error) {
     // Popup may be closed; background will have stored the state
-    if (!error?.message?.includes('Could not establish connection')) {
-      console.warn('[CONTENT] Progress report failed:', error.message);
+    const message = error instanceof Error ? error.message : String(error || '');
+    if (!message.includes('Could not establish connection')) {
+      console.warn('[CONTENT] Progress report failed:', message);
     }
   }
 }
 
+/**
+ * @param {number} stagnantRounds
+ * @param {boolean} complete
+ * @returns {number}
+ */
 function approximatePercent(stagnantRounds, complete) {
   if (complete) {
     return 100;
@@ -991,15 +1119,27 @@ function approximatePercent(stagnantRounds, complete) {
   return Math.min(95, 20 + stagnantRounds * 15);
 }
 
+/**
+ * @param {any} value
+ * @returns {number | null}
+ */
 function parsePositiveInt(value) {
-  const parsed = parseInt(value, 10);
+  const parsed = parseInt(String(value ?? ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+/**
+ * @param {number} ms
+ * @returns {Promise<void>}
+ */
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * @param {ContentLead} lead
+ * @returns {string}
+ */
 function buildLeadKey(lead) {
   const phone = lead.phone?.replace(/\D/g, '') || '';
   const website = lead.website?.toLowerCase() || '';
@@ -1009,6 +1149,11 @@ function buildLeadKey(lead) {
   return key === '|||' ? '' : key;
 }
 
+/**
+ * @param {RawContentLead} lead
+ * @param {string[]} keywords
+ * @returns {boolean}
+ */
 function matchesKeywords(lead, keywords) {
   const searchText = [
     lead.name,
@@ -1024,12 +1169,15 @@ function matchesKeywords(lead, keywords) {
   return keywords.some((keyword) => searchText.includes(keyword.toLowerCase()));
 }
 
+/** @returns {RawContentLead[]} */
 function extractFromContactLinks() {
+  /** @type {RawContentLead[]} */
   const leads = [];
 
   document.querySelectorAll('a[href^="mailto:"]').forEach((link) => {
+    if (!(link instanceof HTMLAnchorElement)) return;
     const email = link.href.replace('mailto:', '').split('?')[0].trim();
-    const text = link.textContent.trim();
+    const text = (link.textContent || '').trim();
 
     if (isValidEmail(email)) {
       leads.push({
@@ -1041,8 +1189,9 @@ function extractFromContactLinks() {
   });
 
   document.querySelectorAll('a[href^="tel:"]').forEach((link) => {
+    if (!(link instanceof HTMLAnchorElement)) return;
     const phone = link.href.replace('tel:', '').replace(/-/g, '').trim();
-    const text = link.textContent.trim();
+    const text = (link.textContent || '').trim();
 
     if (isValidPhone(phone)) {
       const existing = leads.find((lead) => lead.phone === phone);
@@ -1061,9 +1210,11 @@ function extractFromContactLinks() {
   return leads;
 }
 
+/** @returns {RawContentLead[]} */
 function extractFromTextContent() {
+  /** @type {RawContentLead[]} */
   const leads = [];
-  const text = document.body.innerText;
+  const text = document.body?.innerText || '';
 
   const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
   const emails = text.match(emailRegex) || [];
@@ -1097,17 +1248,21 @@ function extractFromTextContent() {
   return leads;
 }
 
+/**
+ * @param {RawContentLead[]} leads
+ */
 function extractStructuredInfo(leads) {
   const nameSelectors = ['h1', 'h2', 'h3', '[itemprop="name"]', '.name', '.author', '.profile-name'];
   const companySelectors = ['[itemprop="name"]', '.company', '.organization'];
   const titleSelectors = ['[itemprop="jobTitle"]', '.job-title', '.title', '.position'];
 
   leads.forEach((lead) => {
-    if (lead.email) {
-      const emailSelector = `[href="mailto:${lead.email}"], [href*="mailto:${lead.email}"]`;
+    const leadEmail = lead.email;
+    if (leadEmail) {
+      const emailSelector = `[href="mailto:${leadEmail}"], [href*="mailto:${leadEmail}"]`;
       const emailEl = document.querySelector(emailSelector) ||
         Array.from(document.querySelectorAll('a[href*="mailto:"]')).find((el) =>
-          el.href.includes(lead.email)
+          el instanceof HTMLAnchorElement && el.href.includes(leadEmail)
         );
 
       if (emailEl) {
@@ -1148,16 +1303,20 @@ function extractStructuredInfo(leads) {
   });
 }
 
+/** @returns {RawContentLead[]} */
 function extractFromSchema() {
+  /** @type {RawContentLead[]} */
   const leads = [];
 
   document.querySelectorAll('script[type="application/ld+json"]').forEach((script) => {
     try {
-      const data = JSON.parse(script.textContent);
+      const rawJson = script.textContent || '';
+      if (!rawJson) return;
+      const data = JSON.parse(rawJson);
       const items = Array.isArray(data) ? data : [data];
 
       items.forEach((item) => {
-        if (item['@type'] === 'Person') {
+        if (item && item['@type'] === 'Person') {
           leads.push({
             name: item.name || '',
             email: item.email || '',
@@ -1177,7 +1336,9 @@ function extractFromSchema() {
   return leads;
 }
 
+/** @returns {RawContentLead[]} */
 function extractFromMicroformats() {
+  /** @type {RawContentLead[]} */
   const leads = [];
 
   document.querySelectorAll('.vcard, [class*="vcard"]').forEach((vcard) => {
@@ -1201,10 +1362,20 @@ function extractFromMicroformats() {
   return leads;
 }
 
+/**
+ * @param {RawContentLead[]} leads
+ * @param {string[]} keywords
+ * @returns {RawContentLead[]}
+ */
 function filterByKeywords(leads, keywords) {
   return leads.filter((lead) => matchesKeywords(lead, keywords));
 }
 
+/**
+ * @param {ParentNode} root
+ * @param {string[]} selectors
+ * @returns {string}
+ */
 function pickText(root, selectors) {
   for (const selector of selectors) {
     const el = root.querySelector(selector);
@@ -1217,6 +1388,11 @@ function pickText(root, selectors) {
   return '';
 }
 
+/**
+ * @param {ParentNode} root
+ * @param {string[]} keys
+ * @returns {string}
+ */
 function pickDataItemText(root, keys) {
   for (const key of keys) {
     const el = root.querySelector(`[data-item-id="${key}"], [data-item-id^="${key}:"]`);
@@ -1229,6 +1405,11 @@ function pickDataItemText(root, keys) {
   return '';
 }
 
+/**
+ * @param {ParentNode} root
+ * @param {string[]} labels
+ * @returns {string}
+ */
 function pickLabelValue(root, labels) {
   const elements = Array.from(root.querySelectorAll('button, a, div'));
 
@@ -1253,6 +1434,10 @@ function pickLabelValue(root, labels) {
   return '';
 }
 
+/**
+ * @param {Element | null} el
+ * @returns {string}
+ */
 function extractActionText(el) {
   if (!el) {
     return '';
@@ -1269,6 +1454,10 @@ function extractActionText(el) {
   return el.textContent?.trim() || '';
 }
 
+/**
+ * @param {RawContentLead} lead
+ * @returns {ContentLead}
+ */
 function normalizeLead(lead) {
   return {
     name: lead.name?.trim() || '',
@@ -1282,10 +1471,16 @@ function normalizeLead(lead) {
     status: lead.status?.trim() || '',
     priceRange: lead.priceRange?.trim() || '',
     services: lead.services?.trim() || '',
-    hours: lead.hours?.trim() || ''
+    hours: lead.hours?.trim() || '',
+    ...(lead.email ? { email: lead.email.trim() } : {}),
+    ...(lead.jobTitle ? { jobTitle: lead.jobTitle.trim() } : {})
   };
 }
 
+/**
+ * @param {string} text
+ * @returns {string}
+ */
 function normalizeWhitespace(text) {
   return text.replace(/\s+/g, ' ').trim();
 }
@@ -1294,10 +1489,18 @@ function isGoogleMapsPage() {
   return /(^|\.)google\./i.test(window.location.hostname) && window.location.pathname.startsWith('/maps');
 }
 
+/**
+ * @param {string} email
+ * @returns {boolean}
+ */
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
+/**
+ * @param {string} phone
+ * @returns {boolean}
+ */
 function isValidPhone(phone) {
   const cleaned = phone.replace(/\D/g, '');
   return cleaned.length >= 10 && cleaned.length <= 15;

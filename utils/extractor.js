@@ -1,5 +1,16 @@
 // Map Leadify - Extraction Logic
 
+/**
+ * @typedef {Object} ExtractedLead
+ * @property {string} [name]
+ * @property {string} [email]
+ * @property {string} [phone]
+ * @property {string} [company]
+ * @property {string} [jobTitle]
+ * @property {string} [website]
+ * @property {string} [address]
+ */
+
 class Extractor {
   // Email pattern
   static EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
@@ -33,7 +44,13 @@ class Extractor {
   ];
 
   // Extract all leads from page
+  /**
+   * @param {string[]} [keywords]
+   * @param {string} [source]
+   * @returns {ExtractedLead[]}
+   */
   static extractFromPage(keywords = [], source = '') {
+    /** @type {ExtractedLead[]} */
     const leads = [];
 
     // Extract from different sources
@@ -54,14 +71,17 @@ class Extractor {
   }
 
   // Extract from mailto: and tel: links
+  /** @returns {ExtractedLead[]} */
   static extractFromContactLinks() {
+    /** @type {ExtractedLead[]} */
     const leads = [];
 
     // Email links
     const emailLinks = document.querySelectorAll('a[href^="mailto:"]');
     emailLinks.forEach(link => {
+      if (!(link instanceof HTMLAnchorElement)) return;
       const email = link.href.replace('mailto:', '').split('?')[0];
-      const text = link.textContent.trim();
+      const text = (link.textContent || '').trim();
 
       if (this.isValidEmail(email)) {
         leads.push({
@@ -79,8 +99,9 @@ class Extractor {
     // Phone links
     const phoneLinks = document.querySelectorAll('a[href^="tel:"]');
     phoneLinks.forEach(link => {
+      if (!(link instanceof HTMLAnchorElement)) return;
       const phone = link.href.replace('tel:', '').replace(/-/g, '');
-      const text = link.textContent.trim();
+      const text = (link.textContent || '').trim();
 
       if (this.isValidPhone(phone)) {
         // Check if lead with phone already exists
@@ -105,9 +126,11 @@ class Extractor {
   }
 
   // Extract from plain text on page
+  /** @returns {ExtractedLead[]} */
   static extractFromText() {
+    /** @type {ExtractedLead[]} */
     const leads = [];
-    const text = document.body.innerText;
+    const text = document.body?.innerText || '';
 
     // Find emails
     const emails = text.match(this.EMAIL_REGEX) || [];
@@ -149,12 +172,12 @@ class Extractor {
     this.NAME_SELECTORS.forEach(selector => {
       const elements = document.querySelectorAll(selector);
       elements.forEach(el => {
-        const text = el.textContent.trim();
+        const text = (el.textContent || '').trim();
         if (text && text.length > 2 && text.length < 100) {
           // Check if this is near contact info
           const parent = el.closest('article, li, div[class*="card"], div[class*="profile"]');
           if (parent) {
-            const parentText = parent.innerText;
+            const parentText = parent instanceof HTMLElement ? parent.innerText : (parent.textContent || '');
             const hasEmail = parentText.match(this.EMAIL_REGEX);
             const hasPhone = parentText.match(this.PHONE_REGEX);
 
@@ -186,11 +209,11 @@ class Extractor {
     this.COMPANY_SELECTORS.forEach(selector => {
       const elements = document.querySelectorAll(selector);
       elements.forEach(el => {
-        const text = el.textContent.trim();
+        const text = (el.textContent || '').trim();
         if (text && text.length > 2 && text.length < 100 && !text.includes('@')) {
           const parent = el.closest('article, li, div[class*="card"], div[class*="profile"]');
           if (parent) {
-            const parentText = parent.innerText;
+            const parentText = parent instanceof HTMLElement ? parent.innerText : (parent.textContent || '');
             const emailMatch = parentText.match(this.EMAIL_REGEX);
 
             if (emailMatch) {
@@ -208,11 +231,11 @@ class Extractor {
     this.JOB_TITLE_SELECTORS.forEach(selector => {
       const elements = document.querySelectorAll(selector);
       elements.forEach(el => {
-        const text = el.textContent.trim();
+        const text = (el.textContent || '').trim();
         if (text && text.length > 2 && text.length < 100) {
           const parent = el.closest('article, li, div[class*="card"], div[class*="profile"]');
           if (parent) {
-            const parentText = parent.innerText;
+            const parentText = parent instanceof HTMLElement ? parent.innerText : (parent.textContent || '');
             const emailMatch = parentText.match(this.EMAIL_REGEX);
 
             if (emailMatch) {
@@ -230,18 +253,22 @@ class Extractor {
   }
 
   // Extract from Schema.org markup
+  /** @returns {ExtractedLead[]} */
   static extractFromSchema() {
+    /** @type {ExtractedLead[]} */
     const leads = [];
 
     // Person schema
     const personScripts = document.querySelectorAll('script[type="application/ld+json"]');
     personScripts.forEach(script => {
       try {
-        const data = JSON.parse(script.textContent);
+        const rawJson = script.textContent || '';
+        if (!rawJson) return;
+        const data = JSON.parse(rawJson);
         const persons = Array.isArray(data) ? data : [data];
 
         persons.forEach(item => {
-          if (item['@type'] === 'Person' || item['@type'] === 'Organization') {
+          if (item && (item['@type'] === 'Person' || item['@type'] === 'Organization')) {
             const lead = {
               name: item.name || '',
               email: item.email || '',
@@ -267,7 +294,9 @@ class Extractor {
   }
 
   // Extract from structured HTML (microformats)
+  /** @returns {ExtractedLead[]} */
   static extractFromStructuredData() {
+    /** @type {ExtractedLead[]} */
     const leads = [];
 
     // vCard format
@@ -318,6 +347,11 @@ class Extractor {
   }
 
   // Filter leads by keywords
+  /**
+   * @param {ExtractedLead[]} leads
+   * @param {string[]} keywords
+   * @returns {ExtractedLead[]}
+   */
   static filterByKeywords(leads, keywords) {
     return leads.filter(lead => {
       const searchText = [
@@ -329,17 +363,30 @@ class Extractor {
   }
 
   // Validate email
+  /**
+   * @param {unknown} email
+   * @returns {boolean}
+   */
   static isValidEmail(email) {
-    return this.EMAIL_REGEX.test(email);
+    if (typeof email !== 'string') return false;
+    return /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(email.trim());
   }
 
   // Validate phone
+  /**
+   * @param {string} phone
+   * @returns {boolean}
+   */
   static isValidPhone(phone) {
     const cleaned = phone.replace(/\D/g, '');
     return cleaned.length >= 10 && cleaned.length <= 15;
   }
 
   // Clean and normalize extracted data
+  /**
+   * @param {ExtractedLead} lead
+   * @returns {ExtractedLead}
+   */
   static normalize(lead) {
     return {
       name: lead.name?.trim() || '',

@@ -4,14 +4,23 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+/** @typedef {(url: string, opts?: Record<string, any>) => Promise<{ ok: boolean, status: number, json: () => Promise<Record<string, any>> }>} MockFetchHandler */
+
 function loadBackgroundWithMocks() {
+  /** @type {Record<string, any>} */
   const store = {};
+  /** @type {((alarm: any) => void)[]} */
   const alarmListeners = [];
+  /** @type {((details: any) => void)[]} */
   const installedListeners = [];
+  /** @type {Record<string, any>} */
   const createdAlarms = {};
+  /** @type {any[]} */
   const sentMessages = [];
+  /** @type {{ tabId: number, msg: any }[]} */
   const tabMessages = [];
 
+  /** @type {MockFetchHandler} */
   let fetchHandler = async () => ({
     ok: false,
     status: 500,
@@ -21,15 +30,18 @@ function loadBackgroundWithMocks() {
   const chromeMock = {
     storage: {
       local: {
+        /** @param {string | string[] | null} [key] */
         get: async (key) => {
           if (typeof key === 'string') {
             return key in store ? { [key]: store[key] } : {};
           }
           return { ...store };
         },
+        /** @param {Record<string, any>} obj */
         set: async (obj) => {
           Object.assign(store, obj);
         },
+        /** @param {string | string[]} key */
         remove: async (key) => {
           if (Array.isArray(key)) {
             key.forEach((k) => delete store[k]);
@@ -40,18 +52,29 @@ function loadBackgroundWithMocks() {
       }
     },
     alarms: {
+      /**
+       * @param {string} name
+       * @param {any} info
+       */
       create: (name, info) => {
         createdAlarms[name] = info;
       },
+      /** @param {string} name */
       clear: async (name) => {
         delete createdAlarms[name];
       },
       onAlarm: {
+        /** @param {(alarm: any) => void} fn */
         addListener: (fn) => alarmListeners.push(fn)
       }
     },
     tabs: {
+      /** @param {{ url: string }} opts */
       create: async ({ url }) => ({ id: 99, url }),
+      /**
+       * @param {number} tabId
+       * @param {any} msg
+       */
       sendMessage: async (tabId, msg) => {
         tabMessages.push({ tabId, msg });
         return { leads: [] };
@@ -63,6 +86,7 @@ function loadBackgroundWithMocks() {
       }
     },
     runtime: {
+      /** @param {any} msg */
       sendMessage: async (msg) => {
         sentMessages.push(msg);
         return {};
@@ -71,34 +95,47 @@ function loadBackgroundWithMocks() {
         addListener: () => {}
       },
       onInstalled: {
+        /** @param {(details: any) => void} fn */
         addListener: (fn) => installedListeners.push(fn)
       }
     }
   };
 
   // Prevent real long-running timers from keeping Node alive
+  /** @type {Set<ReturnType<typeof setInterval>>} */
   const activeTimers = new Set();
+  /**
+   * @param {(...args: any[]) => void} fn
+   * @param {number} [ms]
+   */
   const safeSetInterval = (fn, ms) => {
     const id = setInterval(fn, ms);
     id.unref?.();
     activeTimers.add(id);
     return id;
   };
+  /** @param {ReturnType<typeof setInterval>} id */
   const safeClearInterval = (id) => {
     clearInterval(id);
     activeTimers.delete(id);
   };
+  /**
+   * @param {(...args: any[]) => void} fn
+   * @param {number} [ms]
+   */
   const safeSetTimeout = (fn, ms) => {
     const id = setTimeout(fn, ms);
     id.unref?.();
     activeTimers.add(id);
     return id;
   };
+  /** @param {ReturnType<typeof setTimeout>} id */
   const safeClearTimeout = (id) => {
     clearTimeout(id);
     activeTimers.delete(id);
   };
 
+  /** @type {Record<string, any>} */
   const sandbox = {
     chrome: chromeMock,
     console,
@@ -110,6 +147,7 @@ function loadBackgroundWithMocks() {
     clearTimeout: safeClearTimeout,
     setInterval: safeSetInterval,
     clearInterval: safeClearInterval,
+    /** @param {Parameters<MockFetchHandler>} args */
     fetch: (...args) => fetchHandler(...args),
     importScripts: () => {}
   };
@@ -127,6 +165,7 @@ function loadBackgroundWithMocks() {
     sentMessages,
     tabMessages,
     alarmListeners,
+    /** @param {MockFetchHandler} fn */
     setFetchMock(fn) {
       fetchHandler = fn;
     },
@@ -258,7 +297,7 @@ test('Scenario 4: Unused Trial Key activates only on explicit action, never duri
       }
       if (url.endsWith('/api/trial/activate')) {
         activateCalls += 1;
-        const body = JSON.parse(opts.body);
+        const body = JSON.parse(opts?.body || '{}');
         assert.equal(body.trialKey, 'MLT-TRIAL123');
         return {
           ok: true,
@@ -354,6 +393,45 @@ test('Scenario 5: Trial User Purchases Subscription (Scenario C) seamlessly upgr
     assert.equal(ctx.store.licenseState.expired, true);
     assert.ok(ctx.tabMessages.some((m) => m.tabId === 42 && m.msg.action === 'stopExtraction'));
     assert.equal(ctx.store.extractionSession.isExtracting, false);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('Scenario 6: Expired Trial activation preserves expiresAt in storage and response', async () => {
+  const ctx = loadBackgroundWithMocks();
+  try {
+    const endedIso = '2026-10-01T00:00:00.000Z';
+    ctx.setFetchMock(async (url) => {
+      assert.match(url, /\/api\/trial\/activate$/);
+      return {
+        ok: false,
+        status: 403,
+        json: async () => ({
+          valid: false,
+          code: 'TRIAL_EXPIRED',
+          expired: true,
+          accessType: 'trial',
+          expiresAt: endedIso,
+          error: 'Your trial has expired and cannot be reactivated.'
+        })
+      };
+    });
+
+    const resp = await new Promise((resolve) => {
+      ctx.sandbox.handleBackgroundMessage(
+        { action: 'activateTrial', trialKey: 'MLT-EXPIRED1', email: 'exp@example.com' },
+        null,
+        resolve
+      );
+    });
+
+    assert.equal(resp.valid, false);
+    assert.equal(resp.status, 'expired');
+    assert.equal(resp.expired, true);
+    assert.equal(resp.expiresAt, endedIso);
+    assert.equal(ctx.store.licenseState.expired, true);
+    assert.equal(ctx.store.licenseState.expiresAt, endedIso);
   } finally {
     ctx.cleanup();
   }

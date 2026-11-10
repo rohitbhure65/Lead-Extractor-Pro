@@ -3,8 +3,54 @@
 
 'use strict';
 
+/**
+ * @typedef {Object} ExtractionSettings
+ * @property {number} limit
+ * @property {boolean} noLimit
+ * @property {boolean} requirePhone
+ * @property {boolean} requireWebsite
+ * @property {boolean} requireEmail
+ * @property {string} countryCode
+ */
+
+/**
+ * @typedef {Object} AccessInfo
+ * @property {boolean} [valid]
+ * @property {string} [status]
+ * @property {boolean} [expired]
+ * @property {boolean} [revoked]
+ * @property {boolean} [networkError]
+ * @property {boolean} [upgradedFromTrial]
+ * @property {string} [accessType]
+ * @property {string | null} [code]
+ * @property {string | null} [statusCode]
+ * @property {string | null} [sessionToken]
+ * @property {string | null} [expiresAt]
+ * @property {number | null} [remainingMs]
+ * @property {number | null} [durationDays]
+ * @property {string | null} [error]
+ */
+
+/**
+ * @typedef {Object} PopupSessionState
+ * @property {boolean} isExtracting
+ * @property {string | null} [sessionId]
+ * @property {number | null} [startTime]
+ * @property {number} [percent]
+ * @property {string} [statusText]
+ * @property {number} [totalFound]
+ * @property {number} [totalSaved]
+ * @property {number} [totalFailed]
+ * @property {boolean} [completed]
+ * @property {boolean} [stopped]
+ * @property {boolean} [licenseRevoked]
+ * @property {AccessInfo} [licenseState]
+ * @property {string[]} [errors]
+ */
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 const DEFAULT_COUNTRY_CODE = '+91';
+/** @type {WhatsAppTemplate} */
 const DEFAULT_TEMPLATE = {
   id: 'tpl_default',
   name: 'General Pitch',
@@ -22,9 +68,13 @@ Would you be open to a quick 5-minute chat? I can show you how it can help your 
 class LeadExtractor {
   constructor() {
     // Lead collections (in-memory, mirrored from IndexedDB)
+    /** @type {StoredLead[]} */
     this.leads = [];
+    /** @type {StoredLead[]} */
     this.extractedLeads = [];
+    /** @type {StoredLead[]} */
     this.savedLeads = [];
+    /** @type {StoredLead[]} */
     this.filteredLeads = [];
 
     // UI state
@@ -38,33 +88,100 @@ class LeadExtractor {
 
     // Extraction state (mirrors background)
     this.isExtracting = false;
+    /** @type {string | null} */
     this.activeSessionId = null;
+    /** @type {number | null} */
     this.currentTabId = null;
     this.currentSessionSaved = 0;
+    /** @type {number | null} */
     this.extractionStartTime = null;
+    /** @type {ReturnType<typeof setInterval> | null} */
     this.elapsedTimer = null;
 
     // Settings
+    /** @type {ExtractionSettings | null} */
     this.extractionSettings = null;
 
     // Templates
+    /** @type {WhatsAppTemplate[]} */
     this.templates = [];
+    /** @type {string | null} */
     this.defaultTemplateId = null;
+    /** @type {string | null} */
     this.editingTemplateId = null;
 
     // Licensing & access monitoring state
+    /** @type {AccessInfo | null} */
     this.accessState = null;
     this._isUnlocked = false;
     this._licenseEventsBound = false;
     this._eventsBound = false;
     this._runtimeListenersBound = false;
+    /** @type {ReturnType<typeof setInterval> | null} */
     this._accessPollTimer = null;
+    /** @type {ReturnType<typeof setTimeout> | null} */
     this._accessExpiryTimer = null;
 
     // Confirm dialog promise resolver
+    /** @type {((confirmed: boolean) => void) | null} */
     this._confirmResolve = null;
+    /** @type {ReturnType<typeof setTimeout> | null} */
+    this._toastTimer = null;
 
     this.init();
+  }
+
+  /**
+   * @param {string} id
+   * @returns {HTMLElement | null}
+   */
+  byId(id) {
+    return document.getElementById(id);
+  }
+
+  /**
+   * @param {string} id
+   * @returns {HTMLInputElement | null}
+   */
+  inputEl(id) {
+    const el = document.getElementById(id);
+    return el instanceof HTMLInputElement ? el : null;
+  }
+
+  /**
+   * @param {string} id
+   * @returns {HTMLTextAreaElement | null}
+   */
+  textareaEl(id) {
+    const el = document.getElementById(id);
+    return el instanceof HTMLTextAreaElement ? el : null;
+  }
+
+  /**
+   * @param {string} id
+   * @returns {HTMLSelectElement | null}
+   */
+  selectEl(id) {
+    const el = document.getElementById(id);
+    return el instanceof HTMLSelectElement ? el : null;
+  }
+
+  /**
+   * @param {string} id
+   * @returns {HTMLButtonElement | null}
+   */
+  buttonEl(id) {
+    const el = document.getElementById(id);
+    return el instanceof HTMLButtonElement ? el : null;
+  }
+
+  /**
+   * @param {string} id
+   * @returns {HTMLAnchorElement | null}
+   */
+  anchorEl(id) {
+    const el = document.getElementById(id);
+    return el instanceof HTMLAnchorElement ? el : null;
   }
 
   getPricingUrl() {
@@ -74,6 +191,7 @@ class LeadExtractor {
     return '#pricing';
   }
 
+  /** @returns {Promise<AccessInfo>} */
   async verifyLicenseWithServer() {
     return new Promise(resolve => {
       chrome.runtime.sendMessage({ action: 'verifyLicenseNow', broadcast: false }, res => {
@@ -91,6 +209,7 @@ class LeadExtractor {
       this.bindLicenseEvents();
       this.bindRuntimeListeners();
 
+      /** @type {AccessInfo | null} */
       const state = await new Promise(resolve => {
         chrome.runtime.sendMessage({ action: 'getLicenseState' }, resolve);
       });
@@ -107,7 +226,8 @@ class LeadExtractor {
         return;
       }
 
-      document.getElementById('licenseOverlay').style.display = 'none';
+      const overlay = this.byId('licenseOverlay');
+      if (overlay) overlay.style.display = 'none';
       this.accessState = verified;
       this._isUnlocked = true;
       this.renderAccessStatus(verified);
@@ -127,12 +247,15 @@ class LeadExtractor {
     }
   }
 
+  /**
+   * @param {'paid' | 'trial'} mode
+   */
   switchLicenseMode(mode) {
-    const paidTab = document.getElementById('modePaidTab');
-    const trialTab = document.getElementById('modeTrialTab');
-    const paidSec = document.getElementById('paidKeySection');
-    const trialSec = document.getElementById('trialKeySection');
-    const err = document.getElementById('licenseError');
+    const paidTab = this.byId('modePaidTab');
+    const trialTab = this.byId('modeTrialTab');
+    const paidSec = this.byId('paidKeySection');
+    const trialSec = this.byId('trialKeySection');
+    const err = this.byId('licenseError');
     if (err) {
       err.textContent = '';
       err.style.display = 'none';
@@ -156,18 +279,19 @@ class LeadExtractor {
     this._licenseEventsBound = true;
 
     const pricingUrl = this.getPricingUrl();
-    const buyLink = document.getElementById('buySubscriptionLink');
-    const buyCta = document.getElementById('buyAccessCta');
+    const buyLink = this.anchorEl('buySubscriptionLink');
+    const buyCta = this.anchorEl('buyAccessCta');
     if (buyLink) buyLink.href = pricingUrl;
     if (buyCta) buyCta.href = pricingUrl;
 
-    document.getElementById('modePaidTab')?.addEventListener('click', () => this.switchLicenseMode('paid'));
-    document.getElementById('modeTrialTab')?.addEventListener('click', () => this.switchLicenseMode('trial'));
+    this.byId('modePaidTab')?.addEventListener('click', () => this.switchLicenseMode('paid'));
+    this.byId('modeTrialTab')?.addEventListener('click', () => this.switchLicenseMode('trial'));
 
     const submitLicense = async () => {
-      const btn = document.getElementById('activateLicenseBtn');
-      const input = document.getElementById('licenseKeyInput');
-      const err = document.getElementById('licenseError');
+      const btn = this.buttonEl('activateLicenseBtn');
+      const input = this.inputEl('licenseKeyInput');
+      const err = this.byId('licenseError');
+      if (!btn || !input || !err) return;
       const key = input.value.trim();
 
       if (!key) {
@@ -182,6 +306,7 @@ class LeadExtractor {
       err.style.display = 'none';
 
       try {
+        /** @type {any} */
         const result = await new Promise((resolve, reject) => {
           chrome.runtime.sendMessage(
             { action: 'validateLicense', apiKey: key, activateIfUnusedTrial: true },
@@ -194,7 +319,8 @@ class LeadExtractor {
 
         if (result?.valid) {
           input.value = '';
-          document.getElementById('licenseOverlay').style.display = 'none';
+          const overlay = this.byId('licenseOverlay');
+          if (overlay) overlay.style.display = 'none';
           this.showToast(
             result.accessType === 'trial' ? 'Trial access activated!' : 'Pro license activated!',
             'success'
@@ -216,10 +342,11 @@ class LeadExtractor {
     };
 
     const submitTrial = async () => {
-      const btn = document.getElementById('activateTrialBtn');
-      const keyInput = document.getElementById('trialKeyInput');
-      const emailInput = document.getElementById('trialEmailInput');
-      const err = document.getElementById('licenseError');
+      const btn = this.buttonEl('activateTrialBtn');
+      const keyInput = this.inputEl('trialKeyInput');
+      const emailInput = this.inputEl('trialEmailInput');
+      const err = this.byId('licenseError');
+      if (!btn || !keyInput || !emailInput || !err) return;
       const trialKey = keyInput.value.trim();
       const email = emailInput.value.trim();
 
@@ -235,6 +362,7 @@ class LeadExtractor {
       err.style.display = 'none';
 
       try {
+        /** @type {any} */
         const result = await new Promise((resolve, reject) => {
           chrome.runtime.sendMessage({ action: 'activateTrial', trialKey, email }, res => {
             if (chrome.runtime.lastError) reject(chrome.runtime.lastError);
@@ -245,7 +373,8 @@ class LeadExtractor {
         if (result?.valid) {
           keyInput.value = '';
           emailInput.value = '';
-          document.getElementById('licenseOverlay').style.display = 'none';
+          const overlay = this.byId('licenseOverlay');
+          if (overlay) overlay.style.display = 'none';
           this.showToast(`One-time trial activated (${result.durationDays} days)!`, 'success');
           await this.init();
         } else if (result?.status === 'expired') {
@@ -263,28 +392,30 @@ class LeadExtractor {
       }
     };
 
-    document.getElementById('activateLicenseBtn')?.addEventListener('click', submitLicense);
-    document.getElementById('licenseKeyInput')?.addEventListener('keydown', (e) => {
+    this.byId('activateLicenseBtn')?.addEventListener('click', submitLicense);
+    this.byId('licenseKeyInput')?.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); submitLicense(); }
     });
 
-    document.getElementById('activateTrialBtn')?.addEventListener('click', submitTrial);
-    document.getElementById('trialKeyInput')?.addEventListener('keydown', (e) => {
+    this.byId('activateTrialBtn')?.addEventListener('click', submitTrial);
+    this.byId('trialKeyInput')?.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); submitTrial(); }
     });
-    document.getElementById('trialEmailInput')?.addEventListener('keydown', (e) => {
+    this.byId('trialEmailInput')?.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); submitTrial(); }
     });
 
-    document.getElementById('refreshAccessBtn')?.addEventListener('click', async () => {
-      const refreshBtn = document.getElementById('refreshAccessBtn');
-      const err = document.getElementById('licenseError');
+    this.byId('refreshAccessBtn')?.addEventListener('click', async () => {
+      const refreshBtn = this.buttonEl('refreshAccessBtn');
+      const err = this.byId('licenseError');
+      if (!refreshBtn) return;
       refreshBtn.disabled = true;
       refreshBtn.textContent = 'Checking Server...';
       try {
         const res = await this.verifyLicenseWithServer();
         if (res?.valid) {
-          document.getElementById('licenseOverlay').style.display = 'none';
+          const overlay = this.byId('licenseOverlay');
+          if (overlay) overlay.style.display = 'none';
           this.showToast(
             res.upgradedFromTrial ? 'Upgraded to Paid Subscription!' : 'Access verified!',
             'success'
@@ -304,33 +435,37 @@ class LeadExtractor {
     });
   }
 
+  /**
+   * @param {AccessInfo | boolean} [accessInfo]
+   */
   showLicenseOverlay(accessInfo = {}) {
     this._isUnlocked = false;
     this.stopLiveAccessMonitor();
 
+    /** @type {AccessInfo} */
     const info = typeof accessInfo === 'boolean'
       ? { expired: accessInfo, status: accessInfo ? 'expired' : 'unauthenticated' }
       : (accessInfo || {});
 
-    const overlay = document.getElementById('licenseOverlay');
-    const banner = document.getElementById('licenseStatusBanner');
-    const badge = document.getElementById('licenseStatusBadge');
-    const bannerMsg = document.getElementById('licenseStatusMessage');
-    const expiredActions = document.getElementById('expiredActions');
-    const buyCta = document.getElementById('buyAccessCta');
-    const err = document.getElementById('licenseError');
-    const title = document.getElementById('licenseTitle');
-    const desc = document.getElementById('licenseDesc');
-    const link = document.getElementById('buySubscriptionLink');
-    const sidebarBar = document.getElementById('accessStatusBar');
+    const overlay = this.byId('licenseOverlay');
+    const banner = this.byId('licenseStatusBanner');
+    const badge = this.byId('licenseStatusBadge');
+    const bannerMsg = this.byId('licenseStatusMessage');
+    const expiredActions = this.byId('expiredActions');
+    const buyCta = this.anchorEl('buyAccessCta');
+    const err = this.byId('licenseError');
+    const title = this.byId('licenseTitle');
+    const desc = this.byId('licenseDesc');
+    const link = this.anchorEl('buySubscriptionLink');
+    const sidebarBar = this.byId('accessStatusBar');
 
     if (sidebarBar) sidebarBar.style.display = 'none';
     const pricingUrl = this.getPricingUrl();
     if (link) link.href = pricingUrl;
     if (buyCta) buyCta.href = pricingUrl;
 
-    overlay.style.display = 'flex';
-    banner.classList.remove('revoked');
+    if (overlay) overlay.style.display = 'flex';
+    banner?.classList.remove('revoked');
 
     const isExpired = info.status === 'expired' || Boolean(info.expired);
     const isRevoked = info.status === 'revoked' || Boolean(info.revoked);
@@ -338,60 +473,74 @@ class LeadExtractor {
     const isTrial = info.accessType === 'trial' || info.code === 'TRIAL_EXPIRED' || info.statusCode === 'TRIAL_EXPIRED';
 
     if (isExpired) {
-      banner.style.display = 'block';
-      expiredActions.style.display = 'flex';
-      badge.textContent = isTrial ? 'TRIAL EXPIRED' : 'SUBSCRIPTION EXPIRED';
-      title.textContent = isTrial ? 'Your Trial Has Expired' : 'Subscription Expired';
-      desc.textContent = isTrial
-        ? 'Your one-time trial has ended and cannot be reactivated. Purchase full access to continue extracting and exporting leads.'
-        : 'Your approved subscription period has ended. Submit a renewal payment to restore full access.';
+      if (banner) banner.style.display = 'block';
+      if (expiredActions) expiredActions.style.display = 'flex';
+      if (badge) badge.textContent = isTrial ? 'TRIAL EXPIRED' : 'SUBSCRIPTION EXPIRED';
+      if (title) title.textContent = isTrial ? 'Your Trial Has Expired' : 'Subscription Expired';
+      if (desc) {
+        desc.textContent = isTrial
+          ? 'Your one-time trial has ended and cannot be reactivated. Purchase full access to continue extracting and exporting leads.'
+          : 'Your approved subscription period has ended. Submit a renewal payment to restore full access.';
+      }
       const endedStr = info.expiresAt ? ` Ended: ${new Date(info.expiresAt).toLocaleString()}.` : '';
-      bannerMsg.textContent = (info.error || (isTrial ? 'Trial period expired.' : 'Subscription expired.')) + endedStr;
+      if (bannerMsg) {
+        bannerMsg.textContent = (info.error || (isTrial ? 'Trial period expired.' : 'Subscription expired.')) + endedStr;
+      }
       if (buyCta) {
         buyCta.style.display = 'flex';
         buyCta.textContent = isTrial ? 'Purchase Full Access' : 'Renew Subscription';
       }
       if (link) link.textContent = 'Need help or want to check payment status? Open Dashboard';
-      err.textContent = '';
-      err.style.display = 'none';
+      if (err) {
+        err.textContent = '';
+        err.style.display = 'none';
+      }
       this.switchLicenseMode('paid');
     } else if (isRevoked) {
-      banner.style.display = 'block';
-      banner.classList.add('revoked');
-      expiredActions.style.display = 'flex';
-      badge.textContent = 'ACCESS REVOKED';
-      title.textContent = 'Access Revoked';
-      desc.textContent = 'This license key or subscription has been revoked by the administrator.';
-      bannerMsg.textContent = info.error || 'Access revoked.';
+      if (banner) {
+        banner.style.display = 'block';
+        banner.classList.add('revoked');
+      }
+      if (expiredActions) expiredActions.style.display = 'flex';
+      if (badge) badge.textContent = 'ACCESS REVOKED';
+      if (title) title.textContent = 'Access Revoked';
+      if (desc) desc.textContent = 'This license key or subscription has been revoked by the administrator.';
+      if (bannerMsg) bannerMsg.textContent = info.error || 'Access revoked.';
       if (buyCta) {
         buyCta.style.display = 'flex';
         buyCta.textContent = 'Purchase Full Access';
       }
-      err.textContent = '';
-      err.style.display = 'none';
-      this.switchLicenseMode('paid');
-    } else if (isNetworkError) {
-      banner.style.display = 'block';
-      expiredActions.style.display = 'flex';
-      badge.textContent = 'SERVER VERIFICATION REQUIRED';
-      title.textContent = 'Verification Unavailable';
-      desc.textContent = 'Could not reach the backend server to verify your active access status.';
-      bannerMsg.textContent = info.error || 'Please verify your internet connection and retry.';
-      if (buyCta) buyCta.style.display = 'none';
-      err.textContent = '';
-      err.style.display = 'none';
-    } else {
-      banner.style.display = 'none';
-      expiredActions.style.display = 'none';
-      title.textContent = 'Activate Access';
-      desc.textContent = 'Enter your paid license key or one-time trial key to unlock Map Leadify.';
-      if (link) link.textContent = 'Don\'t have a key? Purchase Full Access';
-      if (info.error && info.status !== 'unauthenticated') {
-        err.textContent = info.error;
-        err.style.display = 'block';
-      } else {
+      if (err) {
         err.textContent = '';
         err.style.display = 'none';
+      }
+      this.switchLicenseMode('paid');
+    } else if (isNetworkError) {
+      if (banner) banner.style.display = 'block';
+      if (expiredActions) expiredActions.style.display = 'flex';
+      if (badge) badge.textContent = 'SERVER VERIFICATION REQUIRED';
+      if (title) title.textContent = 'Verification Unavailable';
+      if (desc) desc.textContent = 'Could not reach the backend server to verify your active access status.';
+      if (bannerMsg) bannerMsg.textContent = info.error || 'Please verify your internet connection and retry.';
+      if (buyCta) buyCta.style.display = 'none';
+      if (err) {
+        err.textContent = '';
+        err.style.display = 'none';
+      }
+    } else {
+      if (banner) banner.style.display = 'none';
+      if (expiredActions) expiredActions.style.display = 'none';
+      if (title) title.textContent = 'Activate Access';
+      if (desc) desc.textContent = 'Enter your paid license key or one-time trial key to unlock Map Leadify.';
+      if (link) link.textContent = 'Don\'t have a key? Purchase Full Access';
+      if (err) {
+        if (info.error && info.status !== 'unauthenticated') {
+          err.textContent = info.error;
+          err.style.display = 'block';
+        } else {
+          err.textContent = '';
+          err.style.display = 'none';
+        }
       }
       if (info.status === 'trial_not_activated') {
         this.switchLicenseMode('trial');
@@ -399,6 +548,11 @@ class LeadExtractor {
     }
   }
 
+  /**
+   * @param {string | null | undefined} expiresAt
+   * @param {number | null | undefined} [remainingMs]
+   * @returns {string}
+   */
   formatRemainingTime(expiresAt, remainingMs) {
     const ms = expiresAt
       ? Math.max(0, new Date(expiresAt).getTime() - Date.now())
@@ -413,11 +567,14 @@ class LeadExtractor {
     return `${Math.max(1, mins)}m left`;
   }
 
+  /**
+   * @param {AccessInfo | null | undefined} accessInfo
+   */
   renderAccessStatus(accessInfo) {
-    const bar = document.getElementById('accessStatusBar');
-    const badge = document.getElementById('accessTypeBadge');
-    const remainingEl = document.getElementById('accessRemainingText');
-    const upgradeLink = document.getElementById('upgradeToProLink');
+    const bar = this.byId('accessStatusBar');
+    const badge = this.byId('accessTypeBadge');
+    const remainingEl = this.byId('accessRemainingText');
+    const upgradeLink = this.anchorEl('upgradeToProLink');
     if (!bar || !accessInfo) return;
 
     const isTrial = accessInfo.accessType === 'trial';
@@ -444,6 +601,9 @@ class LeadExtractor {
     }
   }
 
+  /**
+   * @param {AccessInfo | null | undefined} accessInfo
+   */
   startLiveAccessMonitor(accessInfo) {
     this.stopLiveAccessMonitor();
 
@@ -472,16 +632,19 @@ class LeadExtractor {
   }
 
   stopLiveAccessMonitor() {
-    if (this._accessPollTimer) {
+    if (this._accessPollTimer !== null) {
       clearInterval(this._accessPollTimer);
       this._accessPollTimer = null;
     }
-    if (this._accessExpiryTimer) {
+    if (this._accessExpiryTimer !== null) {
       clearTimeout(this._accessExpiryTimer);
       this._accessExpiryTimer = null;
     }
   }
 
+  /**
+   * @param {AccessInfo} [accessInfo]
+   */
   handleAccessLost(accessInfo = {}) {
     if (this.isExtracting) {
       if (this.currentTabId) {
@@ -500,6 +663,7 @@ class LeadExtractor {
     this.showLicenseOverlay(accessInfo);
   }
 
+  /** @returns {Promise<boolean>} */
   async ensureValidAccess() {
     const res = await this.verifyLicenseWithServer();
     if (!res || !res.valid) {
@@ -513,7 +677,7 @@ class LeadExtractor {
 
   // ── Settings ──────────────────────────────────────────────────────────────
   async loadSettings() {
-    const saved = await Storage.get('extractionSettings');
+    const saved = await LeadStorage.get('extractionSettings');
     this.extractionSettings = {
       limit: saved?.limit || 100,
       noLimit: saved?.noLimit !== undefined ? Boolean(saved.noLimit) : true,
@@ -526,49 +690,64 @@ class LeadExtractor {
   }
 
   async saveSettings() {
-    const limitInput = document.getElementById('maxLeadsInput');
-    const noLimitInput = document.getElementById('noLimitInput');
-    const countryCodeInput = document.getElementById('countryCodeInput');
-    const parsedLimit = parseInt(limitInput.value, 10);
-    const ccDigits = this.getCountryCodeDigits(countryCodeInput.value);
+    const limitInput = this.inputEl('maxLeadsInput');
+    const noLimitInput = this.inputEl('noLimitInput');
+    const countryCodeInput = this.inputEl('countryCodeInput');
+    const reqPhone = this.inputEl('requirePhoneInput');
+    const reqWebsite = this.inputEl('requireWebsiteInput');
+    const reqEmail = this.inputEl('requireEmailInput');
+
+    const parsedLimit = parseInt(limitInput?.value || '100', 10);
+    const ccDigits = this.getCountryCodeDigits(countryCodeInput?.value);
     const countryCode = this.normalizeCountryCode(ccDigits || DEFAULT_COUNTRY_CODE);
-    countryCodeInput.value = this.getCountryCodeDigits(countryCode);
+    if (countryCodeInput) countryCodeInput.value = this.getCountryCodeDigits(countryCode);
 
     this.extractionSettings = {
       limit: Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 100,
-      noLimit: noLimitInput.checked,
-      requirePhone: document.getElementById('requirePhoneInput').checked,
-      requireWebsite: document.getElementById('requireWebsiteInput').checked,
-      requireEmail: document.getElementById('requireEmailInput').checked,
+      noLimit: Boolean(noLimitInput?.checked),
+      requirePhone: Boolean(reqPhone?.checked),
+      requireWebsite: Boolean(reqWebsite?.checked),
+      requireEmail: Boolean(reqEmail?.checked),
       countryCode
     };
 
-    await Storage.set('extractionSettings', this.extractionSettings);
+    await LeadStorage.set('extractionSettings', this.extractionSettings);
   }
 
   renderSettings() {
     const s = this.extractionSettings;
-    document.getElementById('maxLeadsInput').value = s.limit;
-    document.getElementById('noLimitInput').checked = s.noLimit;
-    document.getElementById('requirePhoneInput').checked = s.requirePhone;
-    document.getElementById('requireWebsiteInput').checked = s.requireWebsite;
-    document.getElementById('requireEmailInput').checked = s.requireEmail;
-    document.getElementById('countryCodeInput').value = this.getCountryCodeDigits(s.countryCode);
-    document.getElementById('maxLeadsInput').disabled = s.noLimit;
-    const phoneNote = document.getElementById('phoneNote');
+    if (!s) return;
+    const maxLeads = this.inputEl('maxLeadsInput');
+    const noLimit = this.inputEl('noLimitInput');
+    const reqPhone = this.inputEl('requirePhoneInput');
+    const reqWebsite = this.inputEl('requireWebsiteInput');
+    const reqEmail = this.inputEl('requireEmailInput');
+    const countryCode = this.inputEl('countryCodeInput');
+
+    if (maxLeads) {
+      maxLeads.value = String(s.limit);
+      maxLeads.disabled = s.noLimit;
+    }
+    if (noLimit) noLimit.checked = s.noLimit;
+    if (reqPhone) reqPhone.checked = s.requirePhone;
+    if (reqWebsite) reqWebsite.checked = s.requireWebsite;
+    if (reqEmail) reqEmail.checked = s.requireEmail;
+    if (countryCode) countryCode.value = this.getCountryCodeDigits(s.countryCode);
+
+    const phoneNote = this.byId('phoneNote');
     if (phoneNote) {
       phoneNote.textContent = 'Tip: Disable "Phone Only" for Google Maps – most listings don\'t show phones.';
     }
   }
 
   renderVersion() {
-    const badge = document.getElementById('versionBadge');
+    const badge = this.byId('versionBadge');
     if (badge) badge.textContent = `v${chrome.runtime.getManifest().version}`;
   }
 
   // ── Storage / Leads ───────────────────────────────────────────────────────
   async loadLeads() {
-    const stored = await Storage.getAllLeads();
+    const stored = await LeadStorage.getAllLeads();
     this.leads = stored.map(l => this.normalizeStoredLead(l));
     this.extractedLeads = this.leads.filter(l => !l.type || l.type === 'extracted');
     this.savedLeads = this.leads.filter(l => l.type === 'saved');
@@ -578,12 +757,12 @@ class LeadExtractor {
 
   // ── Templates ─────────────────────────────────────────────────────────────
   async loadTemplates() {
-    this.templates = await Storage.getTemplates();
-    this.defaultTemplateId = await Storage.getDefaultTemplateId();
+    this.templates = await LeadStorage.getTemplates();
+    this.defaultTemplateId = (await LeadStorage.getDefaultTemplateId()) || null;
 
     // Seed default template on first install
     if (this.templates.length === 0) {
-      await Storage.addTemplate(DEFAULT_TEMPLATE);
+      await LeadStorage.addTemplate(DEFAULT_TEMPLATE);
       this.templates = [DEFAULT_TEMPLATE];
       this.defaultTemplateId = DEFAULT_TEMPLATE.id;
     }
@@ -594,34 +773,38 @@ class LeadExtractor {
     this.renderQuickSelect();
   }
 
+  /** @returns {WhatsAppTemplate} */
   getSelectedTemplate() {
     const id = this.defaultTemplateId;
     const tpl = this.templates.find(t => t.id === id) || this.templates[0] || DEFAULT_TEMPLATE;
     // Use the live textarea content as the message body (user may have edited it)
-    const textarea = document.getElementById('whatsAppMessageInput');
+    const textarea = this.textareaEl('whatsAppMessageInput');
     if (textarea) {
       return { ...tpl, body: textarea.value.trim() || tpl.body };
     }
     return tpl;
   }
 
+  /**
+   * @param {string | null} templateId
+   */
   loadTemplateIntoTextarea(templateId) {
     const tpl = this.templates.find(t => t.id === templateId) || this.templates[0];
-    const textarea = document.getElementById('whatsAppMessageInput');
+    const textarea = this.textareaEl('whatsAppMessageInput');
     if (textarea && tpl) textarea.value = tpl.body;
   }
 
   renderQuickSelect() {
-    const sel = document.getElementById('templateQuickSelect');
+    const sel = this.selectEl('templateQuickSelect');
     if (!sel) return;
     sel.innerHTML = this.templates.map(t =>
-      `<option value="${t.id}" ${t.id === this.defaultTemplateId ? 'selected' : ''}>${this.escapeHtml(t.name)}</option>`
+      `<option value="${this.escapeHtml(t.id)}" ${t.id === this.defaultTemplateId ? 'selected' : ''}>${this.escapeHtml(t.name)}</option>`
     ).join('');
   }
 
   renderTemplates() {
-    const list = document.getElementById('templatesList');
-    const empty = document.getElementById('templatesEmpty');
+    const list = this.byId('templatesList');
+    const empty = this.byId('templatesEmpty');
     if (!list) return;
 
     if (this.templates.length === 0) {
@@ -631,79 +814,100 @@ class LeadExtractor {
     }
 
     empty?.classList.add('hidden');
-    list.innerHTML = this.templates.map(t => `
-      <div class="template-item ${t.id === this.defaultTemplateId ? 'is-default' : ''}" data-id="${t.id}">
+    list.innerHTML = this.templates.map(t => {
+      const safeId = this.escapeHtml(t.id);
+      return `
+      <div class="template-item ${t.id === this.defaultTemplateId ? 'is-default' : ''}" data-id="${safeId}">
         <div class="template-item-info">
           <span class="template-item-name">${this.escapeHtml(t.name)}</span>
           ${t.id === this.defaultTemplateId ? '<span class="default-badge">Default</span>' : ''}
         </div>
         <div class="template-item-actions">
-          ${t.id !== this.defaultTemplateId ? `<button class="tpl-btn set-default" data-id="${t.id}" title="Set as default">★</button>` : ''}
-          <button class="tpl-btn edit" data-id="${t.id}" title="Edit">✏️</button>
-          <button class="tpl-btn delete" data-id="${t.id}" title="Delete">🗑️</button>
+          ${t.id !== this.defaultTemplateId ? `<button class="tpl-btn set-default" data-id="${safeId}" title="Set as default">★</button>` : ''}
+          <button class="tpl-btn edit" data-id="${safeId}" title="Edit">✏️</button>
+          <button class="tpl-btn delete" data-id="${safeId}" title="Delete">🗑️</button>
         </div>
       </div>
-    `).join('');
+    `;
+    }).join('');
 
     list.querySelectorAll('button.set-default').forEach(btn => {
-      btn.addEventListener('click', () => this.setDefaultTemplate(btn.dataset.id));
+      if (!(btn instanceof HTMLElement)) return;
+      btn.addEventListener('click', () => {
+        if (btn.dataset.id) this.setDefaultTemplate(btn.dataset.id);
+      });
     });
     list.querySelectorAll('button.edit').forEach(btn => {
-      btn.addEventListener('click', () => this.openTemplateEditor(btn.dataset.id));
+      if (!(btn instanceof HTMLElement)) return;
+      btn.addEventListener('click', () => {
+        if (btn.dataset.id) this.openTemplateEditor(btn.dataset.id);
+      });
     });
     list.querySelectorAll('button.delete').forEach(btn => {
-      btn.addEventListener('click', () => this.deleteTemplate(btn.dataset.id));
+      if (!(btn instanceof HTMLElement)) return;
+      btn.addEventListener('click', () => {
+        if (btn.dataset.id) this.deleteTemplate(btn.dataset.id);
+      });
     });
   }
 
+  /**
+   * @param {string | null} [id]
+   */
   openTemplateEditor(id = null) {
-    const editor = document.getElementById('templateEditor');
-    const title = document.getElementById('editorTitle');
-    const nameInput = document.getElementById('templateNameInput');
-    const bodyInput = document.getElementById('templateBodyInput');
+    const editor = this.byId('templateEditor');
+    const title = this.byId('editorTitle');
+    const nameInput = this.inputEl('templateNameInput');
+    const bodyInput = this.textareaEl('templateBodyInput');
 
     this.editingTemplateId = id;
 
     if (id) {
       const tpl = this.templates.find(t => t.id === id);
       if (!tpl) return;
-      title.textContent = 'Edit Template';
-      nameInput.value = tpl.name;
-      bodyInput.value = tpl.body;
+      if (title) title.textContent = 'Edit Template';
+      if (nameInput) nameInput.value = tpl.name;
+      if (bodyInput) bodyInput.value = tpl.body;
     } else {
-      title.textContent = 'New Template';
-      nameInput.value = '';
-      bodyInput.value = '';
+      if (title) title.textContent = 'New Template';
+      if (nameInput) nameInput.value = '';
+      if (bodyInput) bodyInput.value = '';
     }
 
-    editor.classList.remove('hidden');
-    nameInput.focus();
+    editor?.classList.remove('hidden');
+    nameInput?.focus();
   }
 
   closeTemplateEditor() {
-    document.getElementById('templateEditor')?.classList.add('hidden');
+    this.byId('templateEditor')?.classList.add('hidden');
     this.editingTemplateId = null;
   }
 
   async saveTemplate() {
-    const name = document.getElementById('templateNameInput').value.trim();
-    const body = document.getElementById('templateBodyInput').value.trim();
+    const name = (this.inputEl('templateNameInput')?.value || '').trim();
+    const body = (this.textareaEl('templateBodyInput')?.value || '').trim();
 
     if (!name) { this.showToast('Template name is required', 'error'); return; }
     if (!body) { this.showToast('Template message is required', 'error'); return; }
 
     if (this.editingTemplateId) {
+      const existingTpl = this.templates.find(t => t.id === this.editingTemplateId);
+      if (!existingTpl) {
+        this.showToast('Template not found', 'error');
+        return;
+      }
       const updated = {
-        ...this.templates.find(t => t.id === this.editingTemplateId),
+        ...existingTpl,
         name,
         body,
         updatedAt: Date.now()
       };
-      await Storage.updateTemplate(updated);
+      await LeadStorage.updateTemplate(updated);
       this.showToast('Template updated', 'success');
     } else {
+      /** @type {WhatsAppTemplate} */
       const newTpl = { id: `tpl_${Date.now()}`, name, body, createdAt: Date.now() };
-      await Storage.addTemplate(newTpl);
+      await LeadStorage.addTemplate(newTpl);
       this.showToast('Template created', 'success');
     }
 
@@ -713,7 +917,7 @@ class LeadExtractor {
 
   // Called when user edits the in-sidebar WhatsApp textarea
   async onWhatsAppMessageChange() {
-    const textarea = document.getElementById('whatsAppMessageInput');
+    const textarea = this.textareaEl('whatsAppMessageInput');
     if (!textarea) return;
     const body = textarea.value.trim();
     if (!body) return;
@@ -721,20 +925,26 @@ class LeadExtractor {
     const activeTpl = this.templates.find(t => t.id === this.defaultTemplateId);
     if (activeTpl) {
       const updated = { ...activeTpl, body, updatedAt: Date.now() };
-      await Storage.updateTemplate(updated);
+      await LeadStorage.updateTemplate(updated);
       this.templates = this.templates.map(t => t.id === activeTpl.id ? updated : t);
     }
   }
 
+  /**
+   * @param {string} id
+   */
   async setDefaultTemplate(id) {
     this.defaultTemplateId = id;
-    await Storage.setDefaultTemplateId(id);
+    await LeadStorage.setDefaultTemplateId(id);
     this.loadTemplateIntoTextarea(id);
     this.renderTemplates();
     this.renderQuickSelect();
     this.showToast('Default template updated', 'success');
   }
 
+  /**
+   * @param {string} id
+   */
   async deleteTemplate(id) {
     if (this.templates.length === 1) {
       this.showToast('Cannot delete the only template', 'error');
@@ -744,18 +954,23 @@ class LeadExtractor {
     const confirmed = await this.confirm('Delete Template', 'Are you sure you want to delete this template?');
     if (!confirmed) return;
 
-    await Storage.deleteTemplate(id);
+    await LeadStorage.deleteTemplate(id);
     await this.loadTemplates();
     this.showToast('Template deleted', 'success');
   }
 
+  /**
+   * @param {string} variable
+   */
   insertVar(variable) {
-    // Insert into whichever textarea is focused, else the main one
+    // Insert into whichever textarea is focused, else the template body textarea
     const focused = document.activeElement;
-    const ta = (focused && focused.tagName === 'TEXTAREA') ? focused : document.getElementById('whatsAppMessageInput');
+    const ta = focused instanceof HTMLTextAreaElement
+      ? focused
+      : this.textareaEl('templateBodyInput');
     if (!ta) return;
-    const start = ta.selectionStart;
-    const end = ta.selectionEnd;
+    const start = ta.selectionStart ?? ta.value.length;
+    const end = ta.selectionEnd ?? ta.value.length;
     const before = ta.value.substring(0, start);
     const after = ta.value.substring(end);
     ta.value = before + variable + after;
@@ -766,6 +981,7 @@ class LeadExtractor {
   // ── Background State Sync ─────────────────────────────────────────────────
   async syncExtractionState() {
     try {
+      /** @type {any} */
       const response = await new Promise((resolve, reject) => {
         chrome.runtime.sendMessage({ action: 'getExtractionState' }, (resp) => {
           if (chrome.runtime.lastError) reject(chrome.runtime.lastError);
@@ -777,13 +993,17 @@ class LeadExtractor {
         this.applySessionState(response.session);
       }
     } catch (err) {
-      console.warn('[Popup] Could not fetch session state from background:', err.message);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn('[Popup] Could not fetch session state from background:', msg);
     }
   }
 
+  /**
+   * @param {PopupSessionState} session
+   */
   applySessionState(session) {
     this.isExtracting = session.isExtracting;
-    this.activeSessionId = session.sessionId;
+    this.activeSessionId = session.sessionId || null;
     this.extractionStartTime = session.startTime || null;
 
     // Update UI
@@ -816,7 +1036,7 @@ class LeadExtractor {
     if (this._runtimeListenersBound) return;
     this._runtimeListenersBound = true;
 
-    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       const action = message?.action;
 
       if (action === 'sessionUpdate') {
@@ -851,6 +1071,9 @@ class LeadExtractor {
     });
   }
 
+  /**
+   * @param {PopupSessionState | null | undefined} session
+   */
   handleSessionUpdate(session) {
     if (!session) return;
     if (session.licenseRevoked) {
@@ -859,7 +1082,7 @@ class LeadExtractor {
     }
 
     this.isExtracting = session.isExtracting;
-    this.activeSessionId = session.sessionId;
+    this.activeSessionId = session.sessionId || null;
 
     this.showProgress(session.percent || 0);
     this.setExtractionStatus(session.statusText || '');
@@ -883,6 +1106,9 @@ class LeadExtractor {
     }
   }
 
+  /**
+   * @param {Record<string, any>} message
+   */
   async handleExtractionProgress(message) {
     if (this.activeSessionId && message.sessionId && message.sessionId !== this.activeSessionId) return;
 
@@ -904,6 +1130,10 @@ class LeadExtractor {
     });
   }
 
+  /**
+   * @param {Record<string, any>[]} leadsData
+   * @param {(response?: any) => void} sendResponse
+   */
   async handleSaveLeadsRequest(leadsData, sendResponse) {
     if (!(await this.ensureValidAccess())) {
       sendResponse({ saved: false, reason: 'unauthorized' });
@@ -916,6 +1146,7 @@ class LeadExtractor {
 
     let savedCount = 0;
     for (const leadData of leadsData) {
+      /** @type {StoredLead} */
       const preparedLead = {
         ...this.sanitizeLeadForStorage(leadData),
         id: this.generateId(),
@@ -928,7 +1159,7 @@ class LeadExtractor {
       };
 
       if (!this.isDuplicateLead(preparedLead)) {
-        await Storage.addLead(preparedLead);
+        await LeadStorage.addLead(preparedLead);
         savedCount++;
       }
     }
@@ -951,8 +1182,8 @@ class LeadExtractor {
     this._eventsBound = true;
 
     // Access status controls (sidebar)
-    document.getElementById('sidebarRefreshAccessBtn')?.addEventListener('click', async () => {
-      const btn = document.getElementById('sidebarRefreshAccessBtn');
+    this.byId('sidebarRefreshAccessBtn')?.addEventListener('click', async () => {
+      const btn = this.byId('sidebarRefreshAccessBtn');
       btn?.classList.add('spinning');
       try {
         const prevType = this.accessState?.accessType;
@@ -969,141 +1200,152 @@ class LeadExtractor {
       }
     });
 
-    document.getElementById('logoutLicenseBtn')?.addEventListener('click', async () => {
+    this.byId('logoutLicenseBtn')?.addEventListener('click', async () => {
       const confirmed = await this.confirm('Switch Key / Sign Out', 'Remove the saved license or trial key from this browser?');
       if (!confirmed) return;
-      await new Promise(resolve => chrome.runtime.sendMessage({ action: 'logoutLicense' }, resolve));
+      await new Promise((/** @type {(value?: void) => void} */ resolve) => {
+        chrome.runtime.sendMessage({ action: 'logoutLicense' }, () => resolve());
+      });
       this.accessState = null;
       this.handleAccessLost({ status: 'unauthenticated' });
     });
 
     // Sidebar nav
     document.querySelectorAll('.nav-btn').forEach(btn => {
-      btn.addEventListener('click', () => this.switchSidebarPanel(btn.dataset.panel, btn));
+      if (!(btn instanceof HTMLElement)) return;
+      btn.addEventListener('click', () => this.switchSidebarPanel(btn.dataset.panel || '', btn));
     });
 
     // Extraction buttons
-    document.getElementById('startExtraction').addEventListener('click', () => this.startExtraction());
-    document.getElementById('stopExtraction').addEventListener('click', () => this.stopExtraction());
-    document.getElementById('saveAllLeads').addEventListener('click', () => this.saveAllExtractedLeads());
-    document.getElementById('refreshLeads').addEventListener('click', () => this.refreshData());
+    this.byId('startExtraction')?.addEventListener('click', () => this.startExtraction());
+    this.byId('stopExtraction')?.addEventListener('click', () => this.stopExtraction());
+    this.byId('saveAllLeads')?.addEventListener('click', () => this.saveAllExtractedLeads());
+    this.byId('refreshLeads')?.addEventListener('click', () => this.refreshData());
 
     // Settings
-    document.getElementById('maxLeadsInput').addEventListener('change', () => this.saveSettings());
-    document.getElementById('noLimitInput').addEventListener('change', () => {
-      document.getElementById('maxLeadsInput').disabled = document.getElementById('noLimitInput').checked;
+    this.byId('maxLeadsInput')?.addEventListener('change', () => this.saveSettings());
+    this.byId('noLimitInput')?.addEventListener('change', () => {
+      const maxLeads = this.inputEl('maxLeadsInput');
+      const noLimit = this.inputEl('noLimitInput');
+      if (maxLeads && noLimit) maxLeads.disabled = noLimit.checked;
       this.saveSettings();
     });
-    document.getElementById('requirePhoneInput').addEventListener('change', () => this.saveSettings());
-    document.getElementById('requireWebsiteInput').addEventListener('change', () => this.saveSettings());
-    document.getElementById('requireEmailInput').addEventListener('change', () => this.saveSettings());
-    document.getElementById('countryCodeInput').addEventListener('blur', () => this.saveSettings());
+    this.byId('requirePhoneInput')?.addEventListener('change', () => this.saveSettings());
+    this.byId('requireWebsiteInput')?.addEventListener('change', () => this.saveSettings());
+    this.byId('requireEmailInput')?.addEventListener('change', () => this.saveSettings());
+    this.byId('countryCodeInput')?.addEventListener('blur', () => this.saveSettings());
 
     // WhatsApp message textarea (in-sidebar)
-    const waTextarea = document.getElementById('whatsAppMessageInput');
+    const waTextarea = this.textareaEl('whatsAppMessageInput');
     if (waTextarea) {
       waTextarea.addEventListener('change', () => this.onWhatsAppMessageChange());
       waTextarea.addEventListener('blur', () => this.onWhatsAppMessageChange());
     }
 
     // Quick template selector dropdown
-    const quickSel = document.getElementById('templateQuickSelect');
+    const quickSel = this.selectEl('templateQuickSelect');
     if (quickSel) {
-      quickSel.addEventListener('change', async (e) => {
-        this.defaultTemplateId = e.target.value;
-        await Storage.setDefaultTemplateId(e.target.value);
-        this.loadTemplateIntoTextarea(e.target.value);
+      quickSel.addEventListener('change', async () => {
+        this.defaultTemplateId = quickSel.value;
+        await LeadStorage.setDefaultTemplateId(quickSel.value);
+        this.loadTemplateIntoTextarea(quickSel.value);
         this.renderTemplates();
         this.showToast('Template switched', 'success');
       });
     }
 
     // Gear button → open templates panel
-    document.getElementById('openTemplatesPanel')?.addEventListener('click', () => {
-      const btn = document.getElementById('navTemplates');
+    this.byId('openTemplatesPanel')?.addEventListener('click', () => {
+      const btn = this.byId('navTemplates');
       this.switchSidebarPanel('templatesPanel', btn);
     });
 
     // Inline var chips (in extraction panel)
     document.querySelectorAll('.var-chips-inline .var-chip').forEach(chip => {
+      if (!(chip instanceof HTMLElement)) return;
       chip.addEventListener('click', () => {
-        const ta = document.getElementById('whatsAppMessageInput');
+        const ta = this.textareaEl('whatsAppMessageInput');
         if (!ta) return;
-        const start = ta.selectionStart;
-        const end = ta.selectionEnd;
-        ta.value = ta.value.substring(0, start) + chip.dataset.var + ta.value.substring(end);
-        ta.selectionStart = ta.selectionEnd = start + chip.dataset.var.length;
+        const variable = chip.dataset.var || '';
+        const start = ta.selectionStart ?? ta.value.length;
+        const end = ta.selectionEnd ?? ta.value.length;
+        ta.value = ta.value.substring(0, start) + variable + ta.value.substring(end);
+        ta.selectionStart = ta.selectionEnd = start + variable.length;
         ta.focus();
       });
     });
 
     // Tabs
-    document.getElementById('tabExtracted').addEventListener('click', () => this.handleTabClick('extracted'));
-    document.getElementById('tabSaved').addEventListener('click', () => this.handleTabClick('saved'));
+    this.byId('tabExtracted')?.addEventListener('click', () => this.handleTabClick('extracted'));
+    this.byId('tabSaved')?.addEventListener('click', () => this.handleTabClick('saved'));
 
     // Search (extracted)
-    document.getElementById('searchInput').addEventListener('input', e => {
-      this.searchQuery = e.target.value;
-      document.getElementById('clearSearch').classList.toggle('hidden', !e.target.value);
+    const searchInput = this.inputEl('searchInput');
+    searchInput?.addEventListener('input', () => {
+      this.searchQuery = searchInput.value;
+      this.byId('clearSearch')?.classList.toggle('hidden', !searchInput.value);
       this.applyFilters();
     });
-    document.getElementById('clearSearch').addEventListener('click', () => {
-      document.getElementById('searchInput').value = '';
+    this.byId('clearSearch')?.addEventListener('click', () => {
+      if (searchInput) searchInput.value = '';
       this.searchQuery = '';
-      document.getElementById('clearSearch').classList.add('hidden');
+      this.byId('clearSearch')?.classList.add('hidden');
       this.applyFilters();
     });
 
     // Search (saved)
-    document.getElementById('savedSearchInput').addEventListener('input', e => {
-      this.savedSearchQuery = e.target.value;
-      document.getElementById('clearSavedSearch').classList.toggle('hidden', !e.target.value);
+    const savedSearchInput = this.inputEl('savedSearchInput');
+    savedSearchInput?.addEventListener('input', () => {
+      this.savedSearchQuery = savedSearchInput.value;
+      this.byId('clearSavedSearch')?.classList.toggle('hidden', !savedSearchInput.value);
       this.renderSavedLeads();
     });
-    document.getElementById('clearSavedSearch').addEventListener('click', () => {
-      document.getElementById('savedSearchInput').value = '';
+    this.byId('clearSavedSearch')?.addEventListener('click', () => {
+      if (savedSearchInput) savedSearchInput.value = '';
       this.savedSearchQuery = '';
-      document.getElementById('clearSavedSearch').classList.add('hidden');
+      this.byId('clearSavedSearch')?.classList.add('hidden');
       this.renderSavedLeads();
     });
 
     // Filter
-    document.getElementById('filterSelect').addEventListener('change', e => {
-      this.typeFilter = e.target.value;
+    const filterSelect = this.selectEl('filterSelect');
+    filterSelect?.addEventListener('change', () => {
+      this.typeFilter = filterSelect.value;
       this.applyFilters();
     });
 
     // Scroll-based pagination
-    document.getElementById('leadsList').addEventListener('scroll', () => this.handleLeadListScroll());
+    this.byId('leadsList')?.addEventListener('scroll', () => this.handleLeadListScroll());
 
     // Lead actions (event delegation)
-    document.getElementById('leadsList').addEventListener('click', e => this.handleLeadActionClick(e));
-    document.getElementById('savedList').addEventListener('click', e => this.handleSavedLeadClick(e));
+    this.byId('leadsList')?.addEventListener('click', e => this.handleLeadActionClick(e));
+    this.byId('savedList')?.addEventListener('click', e => this.handleSavedLeadClick(e));
 
     // Export & Clear
-    document.getElementById('exportCSV').addEventListener('click', () => this.exportCSV());
-    document.getElementById('exportExcel').addEventListener('click', () => this.exportExcel());
-    document.getElementById('clearAll').addEventListener('click', () => this.clearAll());
+    this.byId('exportCSV')?.addEventListener('click', () => this.exportCSV());
+    this.byId('exportExcel')?.addEventListener('click', () => this.exportExcel());
+    this.byId('clearAll')?.addEventListener('click', () => this.clearAll());
 
     // Modals
-    document.getElementById('closeModal').addEventListener('click', () => this.closeModal('addLeadModal'));
-    document.getElementById('addLeadForm').addEventListener('submit', e => this.handleAddLead(e));
-    document.getElementById('closeEditModal').addEventListener('click', () => this.closeModal('editLeadModal'));
-    document.getElementById('editLeadForm').addEventListener('submit', e => this.handleEditLead(e));
-    document.getElementById('closeSavedLeadViewModal').addEventListener('click', () => this.closeModal('savedLeadViewModal'));
+    this.byId('closeModal')?.addEventListener('click', () => this.closeModal('addLeadModal'));
+    this.byId('addLeadForm')?.addEventListener('submit', e => this.handleAddLead(e));
+    this.byId('closeEditModal')?.addEventListener('click', () => this.closeModal('editLeadModal'));
+    this.byId('editLeadForm')?.addEventListener('submit', e => this.handleEditLead(e));
+    this.byId('closeSavedLeadViewModal')?.addEventListener('click', () => this.closeModal('savedLeadViewModal'));
 
     // Confirm dialog
-    document.getElementById('confirmOk').addEventListener('click', () => {
+    this.byId('confirmOk')?.addEventListener('click', () => {
       if (this._confirmResolve) { this._confirmResolve(true); this._confirmResolve = null; }
       this.closeModal('confirmModal');
     });
-    document.getElementById('confirmCancel').addEventListener('click', () => {
+    this.byId('confirmCancel')?.addEventListener('click', () => {
       if (this._confirmResolve) { this._confirmResolve(false); this._confirmResolve = null; }
       this.closeModal('confirmModal');
     });
 
     // Close modals on overlay click
     document.querySelectorAll('.modal-overlay').forEach(overlay => {
+      if (!(overlay instanceof HTMLElement)) return;
       overlay.addEventListener('click', e => {
         if (e.target === overlay) {
           overlay.style.display = 'none';
@@ -1113,21 +1355,26 @@ class LeadExtractor {
     });
 
     // Templates panel
-    document.getElementById('addTemplateBtn').addEventListener('click', () => this.openTemplateEditor(null));
-    document.getElementById('saveTemplateBtn').addEventListener('click', () => this.saveTemplate());
-    document.getElementById('cancelTemplateBtn').addEventListener('click', () => this.closeTemplateEditor());
+    this.byId('addTemplateBtn')?.addEventListener('click', () => this.openTemplateEditor(null));
+    this.byId('saveTemplateBtn')?.addEventListener('click', () => this.saveTemplate());
+    this.byId('cancelTemplateBtn')?.addEventListener('click', () => this.closeTemplateEditor());
 
     // Variable chips
     document.querySelectorAll('.var-chip').forEach(chip => {
-      chip.addEventListener('click', () => this.insertVar(chip.dataset.var));
+      if (!(chip instanceof HTMLElement)) return;
+      chip.addEventListener('click', () => this.insertVar(chip.dataset.var || ''));
     });
   }
 
   // ── Sidebar Nav ───────────────────────────────────────────────────────────
+  /**
+   * @param {string} panelId
+   * @param {HTMLElement | null} btn
+   */
   switchSidebarPanel(panelId, btn) {
     document.querySelectorAll('.sidebar-panel').forEach(p => p.classList.remove('active'));
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-    document.getElementById(panelId)?.classList.add('active');
+    if (panelId) this.byId(panelId)?.classList.add('active');
     btn?.classList.add('active');
     this.activeSidebarPanel = panelId;
   }
@@ -1147,7 +1394,7 @@ class LeadExtractor {
       if (!tab?.id) throw new Error('No active tab found. Open a web page or Google Maps search first.');
 
       await this.saveSettings();
-      if (!this.extractionSettings.countryCode) throw new Error('Please enter a valid country code (e.g. 91)');
+      if (!this.extractionSettings?.countryCode) throw new Error('Please enter a valid country code (e.g. 91)');
 
       this.isExtracting = true;
       this.currentSessionSaved = 0;
@@ -1174,6 +1421,7 @@ class LeadExtractor {
       }
 
       // Send extract command to content script with retry mechanism
+      /** @type {any} */
       let response;
       let retries = 3;
       while (retries > 0) {
@@ -1190,7 +1438,8 @@ class LeadExtractor {
           break; // Success
         } catch (err) {
           retries--;
-          if (retries === 0 || !(err.message || '').includes('Receiving end does not exist')) {
+          const errMsg = err instanceof Error ? err.message : String(err || '');
+          if (retries === 0 || !errMsg.includes('Receiving end does not exist')) {
             throw err;
           }
           await new Promise(r => setTimeout(r, 1000)); // Wait 1s and retry
@@ -1230,7 +1479,7 @@ class LeadExtractor {
 
     } catch (error) {
       console.error('[Popup] Extraction error:', error);
-      let msg = error.message || 'Extraction failed';
+      let msg = (error instanceof Error && error.message) ? error.message : 'Extraction failed';
       if (msg.includes('Receiving end does not exist')) {
         msg = 'Could not connect to the page. Please refresh the page (F5) and try again.';
       }
@@ -1273,30 +1522,34 @@ class LeadExtractor {
   }
 
   updateExtractionButtons() {
-    const startBtn = document.getElementById('startExtraction');
-    const stopBtn = document.getElementById('stopExtraction');
-    const spinner = document.getElementById('extractionSpinner');
+    const startBtn = this.buttonEl('startExtraction');
+    const stopBtn = this.byId('stopExtraction');
+    const spinner = this.byId('extractionSpinner');
     const icon = document.querySelector('.btn-icon-start');
-    const text = document.getElementById('startExtractionText');
+    const text = this.byId('startExtractionText');
 
     if (this.isExtracting) {
-      startBtn.disabled = true;
-      startBtn.classList.add('is-extracting');
-      spinner.style.display = 'block';
-      if (icon) icon.style.display = 'none';
+      if (startBtn) {
+        startBtn.disabled = true;
+        startBtn.classList.add('is-extracting');
+      }
+      if (spinner) spinner.style.display = 'block';
+      if (icon instanceof HTMLElement) icon.style.display = 'none';
       if (text) text.textContent = 'Running…';
       stopBtn?.classList.remove('hidden');
     } else {
-      startBtn.disabled = false;
-      startBtn.classList.remove('is-extracting');
-      spinner.style.display = 'none';
-      if (icon) icon.style.display = '';
+      if (startBtn) {
+        startBtn.disabled = false;
+        startBtn.classList.remove('is-extracting');
+      }
+      if (spinner) spinner.style.display = 'none';
+      if (icon instanceof HTMLElement) icon.style.display = '';
       if (text) text.textContent = 'Start Discovery';
       stopBtn?.classList.add('hidden');
     }
 
     // Status indicator
-    const indicator = document.getElementById('statusIndicator');
+    const indicator = this.byId('statusIndicator');
     if (indicator) {
       indicator.className = 'status-indicator';
       if (this.isExtracting) indicator.classList.add('running');
@@ -1304,9 +1557,14 @@ class LeadExtractor {
   }
 
   // ── Lead Ingestion ────────────────────────────────────────────────────────
+  /**
+   * @param {Record<string, any>[]} [rawLeads]
+   * @returns {Promise<number>}
+   */
   async ingestLeads(rawLeads = []) {
     let saved = 0;
     for (const rawLead of rawLeads) {
+      /** @type {StoredLead} */
       const preparedLead = {
         ...this.sanitizeLeadForStorage(rawLead),
         id: this.generateId(),
@@ -1321,7 +1579,7 @@ class LeadExtractor {
       if (this.isDuplicateLead(preparedLead)) continue;
 
       try {
-        await Storage.addLead(preparedLead);
+        await LeadStorage.addLead(preparedLead);
         this.leads.unshift(preparedLead);
         saved++;
       } catch (err) {
@@ -1336,6 +1594,10 @@ class LeadExtractor {
     return saved;
   }
 
+  /**
+   * @param {Partial<StoredLead>} candidate
+   * @returns {boolean}
+   */
   isDuplicateLead(candidate) {
     const phone = candidate.phone?.replace(/\D/g, '');
     const email = candidate.email?.toLowerCase().trim();
@@ -1363,8 +1625,8 @@ class LeadExtractor {
     this.leads = Deduplicator.deduplicate(this.leads);
     const removedCount = originalCount - this.leads.length;
 
-    await Storage.clearAllLeads();
-    for (const lead of this.leads) await Storage.addLead(lead);
+    await LeadStorage.clearAllLeads();
+    for (const lead of this.leads) await LeadStorage.addLead(lead);
 
     await this.loadLeads();
     this.renderAll();
@@ -1399,10 +1661,10 @@ class LeadExtractor {
         this.leads = Deduplicator.deduplicate(this.leads);
 
         // Always rewrite to DB to ensure consistency and avoid partial state bugs
-        await Storage.clearAllLeads();
+        await LeadStorage.clearAllLeads();
         for (const lead of this.leads) {
           // Use updateLead (which uses put) instead of addLead to avoid ConstraintErrors
-          await Storage.updateLead(lead);
+          await LeadStorage.updateLead(lead);
         }
 
         this.extractedLeads = this.leads.filter(l => !l.type || l.type === 'extracted');
@@ -1422,7 +1684,7 @@ class LeadExtractor {
 
   // ── Refresh ───────────────────────────────────────────────────────────────
   async refreshData() {
-    const btn = document.getElementById('refreshLeads');
+    const btn = this.byId('refreshLeads');
     btn?.classList.add('spinning');
     try {
       await this.loadLeads();
@@ -1434,12 +1696,15 @@ class LeadExtractor {
   }
 
   // ── Tab Switching ─────────────────────────────────────────────────────────
+  /**
+   * @param {'extracted' | 'saved'} tabId
+   */
   handleTabClick(tabId) {
     this.activeTab = tabId;
-    document.getElementById('tabExtracted').classList.toggle('active', tabId === 'extracted');
-    document.getElementById('tabSaved').classList.toggle('active', tabId === 'saved');
-    document.getElementById('extractedLeadsContainer').classList.toggle('active', tabId === 'extracted');
-    document.getElementById('savedLeadsContainer').classList.toggle('active', tabId === 'saved');
+    this.byId('tabExtracted')?.classList.toggle('active', tabId === 'extracted');
+    this.byId('tabSaved')?.classList.toggle('active', tabId === 'saved');
+    this.byId('extractedLeadsContainer')?.classList.toggle('active', tabId === 'extracted');
+    this.byId('savedLeadsContainer')?.classList.toggle('active', tabId === 'saved');
     this.applyFilters();
     this.updateBadges();
   }
@@ -1486,9 +1751,13 @@ class LeadExtractor {
     }
   }
 
+  /**
+   * @param {boolean} [reset]
+   */
   renderLeads(reset = false) {
-    const container = document.getElementById('leadsList');
-    const listStatus = document.getElementById('listStatus');
+    const container = this.byId('leadsList');
+    const listStatus = this.byId('listStatus');
+    if (!container || !listStatus) return;
 
     if (this.filteredLeads.length === 0) {
       const msg = this.extractedLeads.length > 0
@@ -1520,13 +1789,18 @@ class LeadExtractor {
     }
   }
 
+  /**
+   * @param {StoredLead} lead
+   * @returns {string}
+   */
   renderLeadRow(lead) {
     const hasWA = this.hasWhatsAppNumber(lead);
-    const ratingHtml = lead.rating ? `<span class="lead-rating">⭐ ${lead.rating}${lead.reviews ? ` (${lead.reviews})` : ''}</span>` : '';
+    const safeId = this.escapeHtml(lead.id);
+    const ratingHtml = lead.rating ? `<span class="lead-rating">⭐ ${this.escapeHtml(lead.rating)}${lead.reviews ? ` (${this.escapeHtml(lead.reviews)})` : ''}</span>` : '';
     const categoryHtml = lead.category ? `<span class="lead-category">${this.escapeHtml(lead.category.slice(0, 30))}</span>` : '';
 
     return `
-      <div class="lead-row ${lead.contacted ? 'contacted' : ''}" data-id="${lead.id}">
+      <div class="lead-row ${lead.contacted ? 'contacted' : ''}" data-id="${safeId}">
         <div class="lead-info">
           <div class="lead-name">${this.escapeHtml(lead.name || 'Unknown Business')}</div>
           <div class="lead-details">
@@ -1543,21 +1817,22 @@ class LeadExtractor {
           </div>
         </div>
         <div class="lead-actions">
-          <button type="button" class="lead-action-btn whatsapp ${hasWA ? '' : 'disabled'}" title="${hasWA ? 'Send WhatsApp' : 'No phone number'}" data-action="whatsapp" data-id="${lead.id}" ${hasWA ? '' : 'disabled'}>
+          <button type="button" class="lead-action-btn whatsapp ${hasWA ? '' : 'disabled'}" title="${hasWA ? 'Send WhatsApp' : 'No phone number'}" data-action="whatsapp" data-id="${safeId}" ${hasWA ? '' : 'disabled'}>
             ${this.whatsappIconSvg()}
           </button>
-          <button type="button" class="lead-action-btn contact ${lead.contacted ? 'active' : ''}" title="${lead.contacted ? 'Mark as not contacted' : 'Mark as contacted'}" data-action="contact" data-id="${lead.id}">
+          <button type="button" class="lead-action-btn contact ${lead.contacted ? 'active' : ''}" title="${lead.contacted ? 'Mark as not contacted' : 'Mark as contacted'}" data-action="contact" data-id="${safeId}">
             ${lead.contacted ? '✓' : '○'}
           </button>
-          <button type="button" class="lead-action-btn edit" title="Edit" data-action="edit" data-id="${lead.id}">✏️</button>
-          <button type="button" class="lead-action-btn delete" title="Delete" data-action="delete" data-id="${lead.id}">🗑️</button>
+          <button type="button" class="lead-action-btn edit" title="Edit" data-action="edit" data-id="${safeId}">✏️</button>
+          <button type="button" class="lead-action-btn delete" title="Delete" data-action="delete" data-id="${safeId}">🗑️</button>
         </div>
       </div>
     `;
   }
 
   renderSavedLeads() {
-    const container = document.getElementById('savedList');
+    const container = this.byId('savedList');
+    if (!container) return;
     const query = this.savedSearchQuery.toLowerCase().trim();
 
     const filtered = this.savedLeads.filter(lead => {
@@ -1575,8 +1850,10 @@ class LeadExtractor {
       return;
     }
 
-    container.innerHTML = filtered.map(lead => `
-      <div class="saved-lead-row" data-id="${lead.id}">
+    container.innerHTML = filtered.map(lead => {
+      const safeId = this.escapeHtml(lead.id);
+      return `
+      <div class="saved-lead-row" data-id="${safeId}">
         <div class="saved-lead-info">
           <div class="saved-lead-name">${this.escapeHtml(lead.name || 'Unknown')}</div>
           <div class="saved-lead-sub">
@@ -1585,42 +1862,60 @@ class LeadExtractor {
           </div>
         </div>
         <div class="saved-lead-actions">
-          <button type="button" class="lead-action-btn whatsapp ${this.hasWhatsAppNumber(lead) ? '' : 'disabled'}" title="${this.hasWhatsAppNumber(lead) ? 'Send WhatsApp' : 'No phone number'}" data-action="whatsapp" data-id="${lead.id}" ${this.hasWhatsAppNumber(lead) ? '' : 'disabled'}>
+          <button type="button" class="lead-action-btn whatsapp ${this.hasWhatsAppNumber(lead) ? '' : 'disabled'}" title="${this.hasWhatsAppNumber(lead) ? 'Send WhatsApp' : 'No phone number'}" data-action="whatsapp" data-id="${safeId}" ${this.hasWhatsAppNumber(lead) ? '' : 'disabled'}>
             ${this.whatsappIconSvg()}
           </button>
-          <button class="lead-action-btn contact ${lead.contacted ? 'active' : ''}" data-action="contact" data-id="${lead.id}" title="Toggle contacted">
+          <button class="lead-action-btn contact ${lead.contacted ? 'active' : ''}" data-action="contact" data-id="${safeId}" title="Toggle contacted">
             ${lead.contacted ? '✓' : '○'}
           </button>
-          <button class="lead-action-btn edit" data-action="edit-saved" data-id="${lead.id}" title="Edit">✏️</button>
-          <button class="lead-action-btn delete" data-action="delete" data-id="${lead.id}" title="Delete">🗑️</button>
+          <button class="lead-action-btn edit" data-action="edit-saved" data-id="${safeId}" title="Edit">✏️</button>
+          <button class="lead-action-btn delete" data-action="delete" data-id="${safeId}" title="Delete">🗑️</button>
         </div>
       </div>
-    `).join('');
+    `;
+    }).join('');
   }
 
   handleLeadListScroll() {
-    const container = document.getElementById('leadsList');
+    const container = this.byId('leadsList');
+    if (!container) return;
     const remaining = container.scrollHeight - container.scrollTop - container.clientHeight;
     if (remaining <= 60) this.renderLeads();
   }
 
+  /**
+   * @param {MouseEvent} event
+   */
   handleLeadActionClick(event) {
+    if (!(event.target instanceof Element)) return;
     const btn = event.target.closest('button[data-action][data-id]');
-    if (!btn || btn.disabled) return;
-    this.dispatchLeadAction(btn.dataset.action, btn.dataset.id);
+    if (!(btn instanceof HTMLButtonElement) || btn.disabled) return;
+    const action = btn.dataset.action;
+    const id = btn.dataset.id;
+    if (action && id) this.dispatchLeadAction(action, id);
   }
 
+  /**
+   * @param {MouseEvent} event
+   */
   handleSavedLeadClick(event) {
+    if (!(event.target instanceof Element)) return;
     const btn = event.target.closest('button[data-action][data-id]');
-    if (btn && !btn.disabled) {
-      this.dispatchLeadAction(btn.dataset.action, btn.dataset.id);
+    if (btn instanceof HTMLButtonElement && !btn.disabled) {
+      const action = btn.dataset.action;
+      const id = btn.dataset.id;
+      if (action && id) this.dispatchLeadAction(action, id);
       return;
     }
     // Click on row → open detail
     const row = event.target.closest('.saved-lead-row[data-id]');
-    if (row) this.showSavedLeadDetails(row.dataset.id);
+    if (row instanceof HTMLElement && row.dataset.id) this.showSavedLeadDetails(row.dataset.id);
   }
 
+  /**
+   * @param {string} action
+   * @param {string} id
+   */
   dispatchLeadAction(action, id) {
     switch (action) {
       case 'whatsapp': this.openWhatsApp(id); break;
@@ -1632,7 +1927,8 @@ class LeadExtractor {
   }
 
   updateListStatus() {
-    const listStatus = document.getElementById('listStatus');
+    const listStatus = this.byId('listStatus');
+    if (!listStatus) return;
     if (!this.filteredLeads.length) { listStatus.textContent = ''; return; }
     const hasMore = this.renderedLeadCount < this.filteredLeads.length;
     listStatus.textContent = hasMore
@@ -1641,41 +1937,59 @@ class LeadExtractor {
   }
 
   updateBadges() {
-    document.getElementById('extractedBadge').textContent = this.extractedLeads.length;
-    document.getElementById('savedBadge').textContent = this.savedLeads.length;
+    const extractedBadge = this.byId('extractedBadge');
+    const savedBadge = this.byId('savedBadge');
+    if (extractedBadge) extractedBadge.textContent = String(this.extractedLeads.length);
+    if (savedBadge) savedBadge.textContent = String(this.savedLeads.length);
   }
 
   // ── Live Stats ─────────────────────────────────────────────────────────────
+  /**
+   * @param {{ totalFound?: number, totalSaved?: number, totalFailed?: number }} stats
+   */
   updateLiveStats({ totalFound, totalSaved, totalFailed }) {
-    document.getElementById('statFound').textContent = totalFound ?? 0;
-    document.getElementById('statSaved').textContent = totalSaved ?? 0;
-    document.getElementById('statFailed').textContent = totalFailed ?? 0;
+    const statFound = this.byId('statFound');
+    const statSaved = this.byId('statSaved');
+    const statFailed = this.byId('statFailed');
+    if (statFound) statFound.textContent = String(totalFound ?? 0);
+    if (statSaved) statSaved.textContent = String(totalSaved ?? 0);
+    if (statFailed) statFailed.textContent = String(totalFailed ?? 0);
   }
 
+  /**
+   * @param {boolean} show
+   */
   showLiveStats(show) {
-    const grid = document.getElementById('liveStatsGrid');
+    const grid = this.byId('liveStatsGrid');
     if (grid) grid.style.display = show ? 'grid' : 'none';
   }
 
+  /**
+   * @param {number | null | undefined} startTime
+   */
   startElapsedTimer(startTime) {
     this.stopElapsedTimer();
     const update = () => {
       const elapsed = Math.floor((Date.now() - (startTime || Date.now())) / 1000);
       const m = Math.floor(elapsed / 60);
       const s = elapsed % 60;
-      document.getElementById('statElapsed').textContent = m > 0 ? `${m}m ${s}s` : `${s}s`;
+      const elapsedEl = this.byId('statElapsed');
+      if (elapsedEl) elapsedEl.textContent = m > 0 ? `${m}m ${s}s` : `${s}s`;
     };
     update();
     this.elapsedTimer = setInterval(update, 1000);
   }
 
   stopElapsedTimer() {
-    if (this.elapsedTimer) { clearInterval(this.elapsedTimer); this.elapsedTimer = null; }
+    if (this.elapsedTimer !== null) { clearInterval(this.elapsedTimer); this.elapsedTimer = null; }
   }
 
+  /**
+   * @param {string[]} errors
+   */
   showErrorLog(errors) {
-    const log = document.getElementById('errorLog');
-    const list = document.getElementById('errorLogList');
+    const log = this.byId('errorLog');
+    const list = this.byId('errorLogList');
     if (!log || !list) return;
     if (errors.length === 0) { log.classList.add('hidden'); return; }
     log.classList.remove('hidden');
@@ -1683,11 +1997,22 @@ class LeadExtractor {
   }
 
   // ── Lead Detail (Saved) ───────────────────────────────────────────────────
+  /**
+   * @param {string} id
+   */
   showSavedLeadDetails(id) {
     const lead = this.leads.find(l => l.id === id);
     if (!lead) return;
 
-    const content = document.getElementById('savedLeadViewContent');
+    const safeId = this.escapeHtml(lead.id);
+    const hasSafeWebsite = lead.website && /^https?:\/\//i.test(lead.website.trim());
+    const content = this.byId('savedLeadViewContent');
+    if (!content) return;
+
+    const contactedLabel = lead.contacted
+      ? (lead.contactedAt ? `✓ Contacted on ${new Date(lead.contactedAt).toLocaleDateString()}` : '✓ Contacted')
+      : '○ Not Contacted';
+
     content.innerHTML = `
       <div class="lead-detail-view">
         <div class="detail-name">${this.escapeHtml(lead.name || 'Unknown')}</div>
@@ -1695,106 +2020,149 @@ class LeadExtractor {
           ${lead.phone ? `<div class="detail-field"><span class="detail-label">📞 Phone</span><span class="detail-val">${this.escapeHtml(lead.phone)}</span></div>` : ''}
           ${lead.email ? `<div class="detail-field"><span class="detail-label">✉️ Email</span><span class="detail-val">${this.escapeHtml(lead.email)}</span></div>` : ''}
           ${lead.company ? `<div class="detail-field"><span class="detail-label">🏢 Company</span><span class="detail-val">${this.escapeHtml(lead.company)}</span></div>` : ''}
-          ${lead.website ? `<div class="detail-field"><span class="detail-label">🌐 Website</span><a href="${this.escapeHtml(lead.website)}" target="_blank" class="detail-link">${this.escapeHtml(lead.website)}</a></div>` : ''}
+          ${lead.website ? `<div class="detail-field"><span class="detail-label">🌐 Website</span>${hasSafeWebsite ? `<a href="${this.escapeHtml(lead.website.trim())}" target="_blank" rel="noopener noreferrer" class="detail-link">${this.escapeHtml(lead.website)}</a>` : `<span class="detail-val">${this.escapeHtml(lead.website)}</span>`}</div>` : ''}
           ${lead.address ? `<div class="detail-field"><span class="detail-label">📍 Address</span><span class="detail-val">${this.escapeHtml(lead.address)}</span></div>` : ''}
           ${lead.category ? `<div class="detail-field"><span class="detail-label">🏷 Category</span><span class="detail-val">${this.escapeHtml(lead.category)}</span></div>` : ''}
           ${lead.rating ? `<div class="detail-field"><span class="detail-label">⭐ Rating</span><span class="detail-val">${this.escapeHtml(lead.rating)} (${this.escapeHtml(String(lead.reviews || 0))} reviews)</span></div>` : ''}
           <div class="detail-field">
             <span class="detail-label">Status</span>
             <span class="status-badge ${lead.contacted ? 'contacted' : ''}">
-              ${lead.contacted ? `✓ Contacted on ${new Date(lead.contactedAt).toLocaleDateString()}` : '○ Not Contacted'}
+              ${contactedLabel}
             </span>
           </div>
         </div>
         <div class="detail-actions">
-          ${this.hasWhatsAppNumber(lead) ? `<button class="lead-action-btn whatsapp" data-action="whatsapp" data-id="${lead.id}" title="Send WhatsApp">${this.whatsappIconSvg()} WhatsApp</button>` : ''}
-          <button class="lead-action-btn contact ${lead.contacted ? 'active' : ''}" data-action="contact" data-id="${lead.id}">${lead.contacted ? '✓ Contacted' : '○ Mark Contacted'}</button>
-          <button class="lead-action-btn edit" data-action="edit-saved" data-id="${lead.id}">✏️ Edit</button>
-          <button class="lead-action-btn delete" data-action="delete" data-id="${lead.id}">🗑️ Delete</button>
+          ${this.hasWhatsAppNumber(lead) ? `<button class="lead-action-btn whatsapp" data-action="whatsapp" data-id="${safeId}" title="Send WhatsApp">${this.whatsappIconSvg()} WhatsApp</button>` : ''}
+          <button class="lead-action-btn contact ${lead.contacted ? 'active' : ''}" data-action="contact" data-id="${safeId}">${lead.contacted ? '✓ Contacted' : '○ Mark Contacted'}</button>
+          <button class="lead-action-btn edit" data-action="edit-saved" data-id="${safeId}">✏️ Edit</button>
+          <button class="lead-action-btn delete" data-action="delete" data-id="${safeId}">🗑️ Delete</button>
         </div>
       </div>
     `;
 
     content.querySelector('.detail-actions')?.addEventListener('click', e => {
+      if (!(e.target instanceof Element)) return;
       const btn = e.target.closest('button[data-action][data-id]');
-      if (!btn) return;
-      this.dispatchLeadAction(btn.dataset.action, btn.dataset.id);
-      if (btn.dataset.action === 'delete') this.closeModal('savedLeadViewModal');
-      else if (btn.dataset.action === 'contact') {
+      if (!(btn instanceof HTMLElement)) return;
+      const action = btn.dataset.action;
+      const targetId = btn.dataset.id;
+      if (!action || !targetId) return;
+      this.dispatchLeadAction(action, targetId);
+      if (action === 'delete') this.closeModal('savedLeadViewModal');
+      else if (action === 'contact') {
         this.closeModal('savedLeadViewModal');
-        setTimeout(() => this.showSavedLeadDetails(btn.dataset.id), 300);
+        setTimeout(() => this.showSavedLeadDetails(targetId), 300);
       }
     });
 
-    document.getElementById('savedLeadViewModal').style.display = 'flex';
+    const modal = this.byId('savedLeadViewModal');
+    if (modal) modal.style.display = 'flex';
   }
 
   // ── Lead CRUD ─────────────────────────────────────────────────────────────
+  /**
+   * @param {string} id
+   */
   async deleteLead(id) {
     const confirmed = await this.confirm('Delete Lead', 'Delete this lead permanently?');
     if (!confirmed) return;
-    await Storage.deleteLead(id);
+    await LeadStorage.deleteLead(id);
     await this.loadLeads();
     this.renderAll();
     this.showToast('Lead deleted', 'success');
   }
 
+  /**
+   * @param {HTMLFormElement} form
+   * @param {string} fieldName
+   * @returns {HTMLInputElement | null}
+   */
+  getFormInput(form, fieldName) {
+    const item = form.elements.namedItem(fieldName);
+    return item instanceof HTMLInputElement ? item : null;
+  }
+
+  /**
+   * @param {string} id
+   */
   editLead(id) {
     const lead = this.leads.find(l => l.id === id);
     if (!lead) return;
 
-    const form = document.getElementById('editLeadForm');
-    form.id.value = lead.id;
-    form.name.value = lead.name || '';
-    form.email.value = lead.email || '';
-    form.phone.value = lead.phone || '';
-    form.company.value = lead.company || '';
-    form.jobTitle.value = lead.jobTitle || '';
-    form.website.value = lead.website || '';
-    form.address.value = lead.address || '';
+    const form = /** @type {HTMLFormElement | null} */ (document.getElementById('editLeadForm'));
+    if (!form) return;
 
-    document.getElementById('editLeadModal').style.display = 'flex';
+    const idInput = this.getFormInput(form, 'id');
+    const nameInput = this.getFormInput(form, 'name');
+    const emailInput = this.getFormInput(form, 'email');
+    const phoneInput = this.getFormInput(form, 'phone');
+    const companyInput = this.getFormInput(form, 'company');
+    const jobTitleInput = this.getFormInput(form, 'jobTitle');
+    const websiteInput = this.getFormInput(form, 'website');
+    const addressInput = this.getFormInput(form, 'address');
+
+    if (idInput) idInput.value = lead.id;
+    if (nameInput) nameInput.value = lead.name || '';
+    if (emailInput) emailInput.value = lead.email || '';
+    if (phoneInput) phoneInput.value = lead.phone || '';
+    if (companyInput) companyInput.value = lead.company || '';
+    if (jobTitleInput) jobTitleInput.value = lead.jobTitle || '';
+    if (websiteInput) websiteInput.value = lead.website || '';
+    if (addressInput) addressInput.value = lead.address || '';
+
+    const editModal = this.byId('editLeadModal');
+    if (editModal) editModal.style.display = 'flex';
   }
 
+  /**
+   * @param {SubmitEvent} e
+   */
   async handleEditLead(e) {
     e.preventDefault();
+    if (!(e.target instanceof HTMLFormElement)) return;
     const form = e.target;
-    const id = form.id.value;
+    const id = this.getFormInput(form, 'id')?.value || '';
     const existing = this.leads.find(l => l.id === id);
     if (!existing) { this.showToast('Lead not found', 'error'); return; }
 
+    /** @type {StoredLead} */
     const updatedLead = {
       ...existing,
-      name: form.name.value.trim(),
-      email: form.email.value.trim(),
-      phone: form.phone.value.trim(),
-      company: form.company.value.trim(),
-      jobTitle: form.jobTitle.value.trim(),
-      website: form.website.value.trim(),
-      address: form.address.value.trim(),
+      name: (this.getFormInput(form, 'name')?.value || '').trim(),
+      email: (this.getFormInput(form, 'email')?.value || '').trim(),
+      phone: (this.getFormInput(form, 'phone')?.value || '').trim(),
+      company: (this.getFormInput(form, 'company')?.value || '').trim(),
+      jobTitle: (this.getFormInput(form, 'jobTitle')?.value || '').trim(),
+      website: (this.getFormInput(form, 'website')?.value || '').trim(),
+      address: (this.getFormInput(form, 'address')?.value || '').trim(),
       updatedAt: Date.now()
     };
 
-    await Storage.updateLead(updatedLead);
+    await LeadStorage.updateLead(updatedLead);
     await this.loadLeads();
     this.renderAll();
     this.closeModal('editLeadModal');
     this.showToast('Lead updated', 'success');
   }
 
+  /**
+   * @param {SubmitEvent} e
+   */
   async handleAddLead(e) {
     e.preventDefault();
+    if (!(e.target instanceof HTMLFormElement)) return;
     const form = e.target;
 
+    /** @type {StoredLead} */
     const newLead = {
       id: this.generateId(),
-      name: form.name.value.trim(),
-      email: form.email.value.trim(),
-      phone: form.phone.value.trim(),
-      company: form.company.value.trim(),
-      jobTitle: form.jobTitle.value.trim(),
-      website: form.website.value.trim(),
-      address: form.address.value.trim(),
+      name: (this.getFormInput(form, 'name')?.value || '').trim(),
+      email: (this.getFormInput(form, 'email')?.value || '').trim(),
+      phone: (this.getFormInput(form, 'phone')?.value || '').trim(),
+      company: (this.getFormInput(form, 'company')?.value || '').trim(),
+      jobTitle: (this.getFormInput(form, 'jobTitle')?.value || '').trim(),
+      website: (this.getFormInput(form, 'website')?.value || '').trim(),
+      address: (this.getFormInput(form, 'address')?.value || '').trim(),
       type: 'saved',
       contacted: false,
       contactedAt: null,
@@ -1808,7 +2176,7 @@ class LeadExtractor {
       return;
     }
 
-    await Storage.addLead(newLead);
+    await LeadStorage.addLead(newLead);
     await this.loadLeads();
     this.renderAll();
     this.closeModal('addLeadModal');
@@ -1820,7 +2188,7 @@ class LeadExtractor {
     const confirmed = await this.confirm('Clear All Leads', 'This will permanently delete ALL leads. This cannot be undone.');
     if (!confirmed) return;
 
-    await Storage.clearAllLeads();
+    await LeadStorage.clearAllLeads();
     this.leads = [];
     this.extractedLeads = [];
     this.savedLeads = [];
@@ -1831,11 +2199,16 @@ class LeadExtractor {
   }
 
   // ── Toggle Contacted ──────────────────────────────────────────────────────
+  /**
+   * @param {string} id
+   * @param {boolean | null} [forceValue]
+   */
   async toggleContacted(id, forceValue = null) {
     const lead = this.leads.find(l => l.id === id);
     if (!lead) return;
 
     const newValue = forceValue !== null ? forceValue : !lead.contacted;
+    /** @type {StoredLead} */
     const updatedLead = {
       ...lead,
       contacted: newValue,
@@ -1843,7 +2216,7 @@ class LeadExtractor {
       updatedAt: Date.now()
     };
 
-    await Storage.updateLead(updatedLead);
+    await LeadStorage.updateLead(updatedLead);
     this.leads = this.leads.map(l => l.id === id ? updatedLead : l);
     this.extractedLeads = this.leads.filter(l => !l.type || l.type === 'extracted');
     this.savedLeads = this.leads.filter(l => l.type === 'saved');
@@ -1852,6 +2225,9 @@ class LeadExtractor {
   }
 
   // ── WhatsApp ──────────────────────────────────────────────────────────────
+  /**
+   * @param {string} id
+   */
   async openWhatsApp(id) {
     if (!(await this.ensureValidAccess())) return;
     const lead = this.leads.find(l => l.id === id);
@@ -1886,6 +2262,11 @@ class LeadExtractor {
     }
   }
 
+  /**
+   * @param {StoredLead} lead
+   * @param {string} [messageBody]
+   * @returns {string}
+   */
   buildWhatsAppUrl(lead, messageBody) {
     const phone = this.formatPhoneForWhatsApp(lead.phone);
     if (!phone || phone.length < 10) return '';
@@ -1895,6 +2276,11 @@ class LeadExtractor {
     return `https://wa.me/${phone}?text=${encodeURIComponent(personalizedMessage)}`;
   }
 
+  /**
+   * @param {string} message
+   * @param {StoredLead} lead
+   * @returns {string}
+   */
   substitutePlaceholders(message, lead) {
     if (!message) return '';
     return message
@@ -1918,9 +2304,13 @@ class LeadExtractor {
       .trim();
   }
 
+  /**
+   * @param {string | null | undefined} phone
+   * @returns {string}
+   */
   formatPhoneForWhatsApp(phone) {
     if (!phone) return '';
-    let digits = String(phone).replace(/\D/g, '');
+    const digits = String(phone).replace(/\D/g, '');
     if (!digits) return '';
 
     const countryCode = (this.extractionSettings?.countryCode || '').replace(/\D/g, '');
@@ -1940,6 +2330,10 @@ class LeadExtractor {
     return localPart;
   }
 
+  /**
+   * @param {StoredLead} lead
+   * @returns {boolean}
+   */
   hasWhatsAppNumber(lead) {
     return this.formatPhoneForWhatsApp(lead.phone).length >= 10;
   }
@@ -1974,6 +2368,10 @@ class LeadExtractor {
     this.showToast(`Exported ${this.leads.length} leads as Excel`, 'success');
   }
 
+  /**
+   * @param {StoredLead} lead
+   * @returns {Record<string, any>}
+   */
   buildExportRow(lead) {
     const template = this.getSelectedTemplate();
     return {
@@ -1994,6 +2392,12 @@ class LeadExtractor {
     };
   }
 
+  /**
+   * @param {XLSX.WorkSheet} worksheet
+   * @param {Record<string, any>[]} data
+   * @param {number} columnIndex
+   * @param {string} label
+   */
   addWorksheetHyperlinks(worksheet, data, columnIndex, label) {
     data.forEach((row, rowIndex) => {
       const url = row['WhatsApp URL'];
@@ -2003,6 +2407,10 @@ class LeadExtractor {
     });
   }
 
+  /**
+   * @param {Blob} blob
+   * @param {string} filename
+   */
   downloadBlob(blob, filename) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -2014,6 +2422,10 @@ class LeadExtractor {
     URL.revokeObjectURL(url);
   }
 
+  /**
+   * @param {string} filename
+   * @returns {string}
+   */
   getTimestampedFilename(filename) {
     const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const dotIdx = filename.lastIndexOf('.');
@@ -2023,41 +2435,68 @@ class LeadExtractor {
   }
 
   // ── Progress UI ───────────────────────────────────────────────────────────
+  /**
+   * @param {number} percent
+   */
   showProgress(percent) {
-    document.getElementById('progressContainer').style.display = 'flex';
-    document.getElementById('progressFill').style.width = `${percent}%`;
-    document.getElementById('progressText').textContent = `${Math.round(percent)}%`;
+    const container = this.byId('progressContainer');
+    const fill = this.byId('progressFill');
+    const text = this.byId('progressText');
+    if (container) container.style.display = 'flex';
+    if (fill) fill.style.width = `${percent}%`;
+    if (text) text.textContent = `${Math.round(percent)}%`;
   }
 
   hideProgress() {
-    document.getElementById('progressContainer').style.display = 'none';
+    const container = this.byId('progressContainer');
+    if (container) container.style.display = 'none';
   }
 
+  /**
+   * @param {string} message
+   */
   setExtractionStatus(message) {
-    document.getElementById('extractionStatus').textContent = message;
+    const el = this.byId('extractionStatus');
+    if (el) el.textContent = message;
   }
 
   // ── Modals & Dialogs ──────────────────────────────────────────────────────
+  /**
+   * @param {string} id
+   */
   closeModal(id) {
-    const modal = document.getElementById(id);
+    const modal = this.byId(id);
     if (modal) modal.style.display = 'none';
   }
 
+  /**
+   * @param {string} title
+   * @param {string} message
+   * @returns {Promise<boolean>}
+   */
   confirm(title, message) {
     return new Promise(resolve => {
-      document.getElementById('confirmTitle').textContent = title;
-      document.getElementById('confirmMessage').textContent = message;
-      document.getElementById('confirmModal').style.display = 'flex';
+      const titleEl = this.byId('confirmTitle');
+      const msgEl = this.byId('confirmMessage');
+      const modal = this.byId('confirmModal');
+      if (titleEl) titleEl.textContent = title;
+      if (msgEl) msgEl.textContent = message;
+      if (modal) modal.style.display = 'flex';
       this._confirmResolve = resolve;
     });
   }
 
   // ── Toast ─────────────────────────────────────────────────────────────────
+  /**
+   * @param {string} message
+   * @param {string} [type]
+   */
   showToast(message, type = '') {
-    const toast = document.getElementById('toast');
+    const toast = this.byId('toast');
+    if (!toast) return;
     toast.textContent = message;
     toast.className = `toast show ${type}`;
-    clearTimeout(this._toastTimer);
+    if (this._toastTimer !== null) clearTimeout(this._toastTimer);
     this._toastTimer = setTimeout(() => toast.classList.remove('show'), 3200);
   }
 
@@ -2066,10 +2505,17 @@ class LeadExtractor {
     return `lead_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   }
 
+  /**
+   * @param {StoredLead} lead
+   * @returns {StoredLead}
+   */
   normalizeStoredLead(lead) {
     return { ...lead, contacted: Boolean(lead.contacted), contactedAt: lead.contactedAt || null };
   }
 
+  /**
+   * @param {Record<string, any>} [raw]
+   */
   sanitizeLeadForStorage(raw = {}) {
     return {
       name: String(raw.name || '').trim(),
@@ -2086,30 +2532,51 @@ class LeadExtractor {
     };
   }
 
+  /**
+   * @param {unknown} value
+   * @returns {string}
+   */
   normalizeCountryCode(value) {
     const digits = this.getCountryCodeDigits(value);
     return digits ? `+${digits}` : '';
   }
 
+  /**
+   * @param {unknown} value
+   * @returns {string}
+   */
   getCountryCodeDigits(value) {
     return String(value || '').replace(/\D/g, '');
   }
 
+  /**
+   * @param {unknown} value
+   * @returns {number}
+   */
   getRatingValue(value) {
     const parsed = parseFloat(String(value || '').replace(/[^0-9.]/g, ''));
     return Number.isFinite(parsed) ? parsed : 0;
   }
 
+  /**
+   * @param {unknown} value
+   * @returns {number}
+   */
   getReviewsValue(value) {
     const parsed = parseInt(String(value || '').replace(/[^0-9]/g, ''), 10);
     return Number.isFinite(parsed) ? parsed : 0;
   }
 
+  /** @returns {Promise<chrome.tabs.Tab | null>} */
   async getExtractionTab() {
     const activeTabs = await chrome.tabs.query({ active: true });
     return activeTabs.find(tab => tab.id && tab.url && !tab.url.startsWith('chrome-extension://')) || null;
   }
 
+  /**
+   * @param {unknown} str
+   * @returns {string}
+   */
   escapeHtml(str) {
     if (!str) return '';
     return String(str)
