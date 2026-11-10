@@ -52,29 +52,71 @@ class LeadExtractor {
     this.defaultTemplateId = null;
     this.editingTemplateId = null;
 
+    // Licensing & access monitoring state
+    this.accessState = null;
+    this._isUnlocked = false;
+    this._licenseEventsBound = false;
+    this._eventsBound = false;
+    this._runtimeListenersBound = false;
+    this._accessPollTimer = null;
+    this._accessExpiryTimer = null;
+
     // Confirm dialog promise resolver
     this._confirmResolve = null;
 
     this.init();
   }
 
+  getPricingUrl() {
+    if (typeof ENV !== 'undefined' && ENV.APP_URL) {
+      return `${ENV.APP_URL.replace(/\/$/, '')}/#pricing`;
+    }
+    return '#pricing';
+  }
+
+  async verifyLicenseWithServer() {
+    return new Promise(resolve => {
+      chrome.runtime.sendMessage({ action: 'verifyLicenseNow', broadcast: false }, res => {
+        if (chrome.runtime.lastError) {
+          resolve({ valid: false, status: 'error', error: chrome.runtime.lastError.message || 'Verification failed' });
+        } else {
+          resolve(res || { valid: false, status: 'error', error: 'Verification failed' });
+        }
+      });
+    });
+  }
+
   async init() {
     try {
+      this.bindLicenseEvents();
+      this.bindRuntimeListeners();
+
       const state = await new Promise(resolve => {
         chrome.runtime.sendMessage({ action: 'getLicenseState' }, resolve);
       });
 
-      if (!state.valid) {
-        document.getElementById('licenseOverlay').style.display = 'flex';
-        this.bindLicenseEvents();
-        return; // Halt initialization if not licensed
+      if (!state || !state.sessionToken) {
+        this.showLicenseOverlay({ status: 'unauthenticated' });
+        return; // Halt initialization if no key is configured
       }
+
+      // Always verify with backend on popup open — never trust cached storage alone
+      const verified = await this.verifyLicenseWithServer();
+      if (!verified || !verified.valid) {
+        this.showLicenseOverlay(verified || state);
+        return;
+      }
+
+      document.getElementById('licenseOverlay').style.display = 'none';
+      this.accessState = verified;
+      this._isUnlocked = true;
+      this.renderAccessStatus(verified);
+      this.startLiveAccessMonitor(verified);
 
       await this.loadSettings();
       await this.loadLeads();
       await this.loadTemplates();
       this.bindEvents();
-      this.bindRuntimeListeners();
       this.renderVersion();
       this.renderAll();
       // Re-hydrate extraction state from background
@@ -85,68 +127,388 @@ class LeadExtractor {
     }
   }
 
+  switchLicenseMode(mode) {
+    const paidTab = document.getElementById('modePaidTab');
+    const trialTab = document.getElementById('modeTrialTab');
+    const paidSec = document.getElementById('paidKeySection');
+    const trialSec = document.getElementById('trialKeySection');
+    const err = document.getElementById('licenseError');
+    if (err) {
+      err.textContent = '';
+      err.style.display = 'none';
+    }
+
+    if (mode === 'trial') {
+      paidTab?.classList.remove('active');
+      trialTab?.classList.add('active');
+      if (paidSec) paidSec.style.display = 'none';
+      if (trialSec) trialSec.style.display = 'block';
+    } else {
+      trialTab?.classList.remove('active');
+      paidTab?.classList.add('active');
+      if (trialSec) trialSec.style.display = 'none';
+      if (paidSec) paidSec.style.display = 'block';
+    }
+  }
+
   bindLicenseEvents() {
-    document.getElementById('activateLicenseBtn').addEventListener('click', async () => {
+    if (this._licenseEventsBound) return;
+    this._licenseEventsBound = true;
+
+    const pricingUrl = this.getPricingUrl();
+    const buyLink = document.getElementById('buySubscriptionLink');
+    const buyCta = document.getElementById('buyAccessCta');
+    if (buyLink) buyLink.href = pricingUrl;
+    if (buyCta) buyCta.href = pricingUrl;
+
+    document.getElementById('modePaidTab')?.addEventListener('click', () => this.switchLicenseMode('paid'));
+    document.getElementById('modeTrialTab')?.addEventListener('click', () => this.switchLicenseMode('trial'));
+
+    const submitLicense = async () => {
       const btn = document.getElementById('activateLicenseBtn');
       const input = document.getElementById('licenseKeyInput');
       const err = document.getElementById('licenseError');
       const key = input.value.trim();
 
       if (!key) {
-        err.textContent = 'Please enter a valid API key';
+        err.textContent = 'Please enter a valid API Key or Trial Key.';
+        err.style.display = 'block';
         return;
       }
 
-      btn.textContent = 'Activating...';
+      btn.textContent = 'Verifying...';
       btn.disabled = true;
       err.textContent = '';
+      err.style.display = 'none';
 
       try {
         const result = await new Promise((resolve, reject) => {
-          chrome.runtime.sendMessage({ action: 'validateLicense', apiKey: key }, res => {
+          chrome.runtime.sendMessage(
+            { action: 'validateLicense', apiKey: key, activateIfUnusedTrial: true },
+            res => {
+              if (chrome.runtime.lastError) reject(chrome.runtime.lastError);
+              else resolve(res);
+            }
+          );
+        });
+
+        if (result?.valid) {
+          input.value = '';
+          document.getElementById('licenseOverlay').style.display = 'none';
+          this.showToast(
+            result.accessType === 'trial' ? 'Trial access activated!' : 'Pro license activated!',
+            'success'
+          );
+          await this.init();
+        } else if (result?.status === 'expired' || result?.status === 'revoked') {
+          this.showLicenseOverlay(result);
+        } else {
+          err.textContent = result?.error || 'Invalid key';
+          err.style.display = 'block';
+        }
+      } catch (e) {
+        err.textContent = 'Failed to connect to verification server';
+        err.style.display = 'block';
+      } finally {
+        btn.textContent = 'Activate Now';
+        btn.disabled = false;
+      }
+    };
+
+    const submitTrial = async () => {
+      const btn = document.getElementById('activateTrialBtn');
+      const keyInput = document.getElementById('trialKeyInput');
+      const emailInput = document.getElementById('trialEmailInput');
+      const err = document.getElementById('licenseError');
+      const trialKey = keyInput.value.trim();
+      const email = emailInput.value.trim();
+
+      if (!trialKey) {
+        err.textContent = 'Please enter your Trial Key.';
+        err.style.display = 'block';
+        return;
+      }
+
+      btn.textContent = 'Activating Trial...';
+      btn.disabled = true;
+      err.textContent = '';
+      err.style.display = 'none';
+
+      try {
+        const result = await new Promise((resolve, reject) => {
+          chrome.runtime.sendMessage({ action: 'activateTrial', trialKey, email }, res => {
             if (chrome.runtime.lastError) reject(chrome.runtime.lastError);
             else resolve(res);
           });
         });
 
-        if (result.valid) {
+        if (result?.valid) {
+          keyInput.value = '';
+          emailInput.value = '';
           document.getElementById('licenseOverlay').style.display = 'none';
-          this.init(); // Restart app init
+          this.showToast(`One-time trial activated (${result.durationDays} days)!`, 'success');
+          await this.init();
+        } else if (result?.status === 'expired') {
+          this.showLicenseOverlay(result);
         } else {
-          err.textContent = result.error || 'Invalid API key';
+          err.textContent = result?.error || 'Unable to activate trial';
+          err.style.display = 'block';
         }
       } catch (e) {
-        err.textContent = 'Failed to connect to server';
+        err.textContent = 'Failed to connect to verification server';
+        err.style.display = 'block';
       } finally {
-        btn.textContent = 'Activate Now';
+        btn.textContent = 'Activate One-Time Trial';
         btn.disabled = false;
+      }
+    };
+
+    document.getElementById('activateLicenseBtn')?.addEventListener('click', submitLicense);
+    document.getElementById('licenseKeyInput')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); submitLicense(); }
+    });
+
+    document.getElementById('activateTrialBtn')?.addEventListener('click', submitTrial);
+    document.getElementById('trialKeyInput')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); submitTrial(); }
+    });
+    document.getElementById('trialEmailInput')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); submitTrial(); }
+    });
+
+    document.getElementById('refreshAccessBtn')?.addEventListener('click', async () => {
+      const refreshBtn = document.getElementById('refreshAccessBtn');
+      const err = document.getElementById('licenseError');
+      refreshBtn.disabled = true;
+      refreshBtn.textContent = 'Checking Server...';
+      try {
+        const res = await this.verifyLicenseWithServer();
+        if (res?.valid) {
+          document.getElementById('licenseOverlay').style.display = 'none';
+          this.showToast(
+            res.upgradedFromTrial ? 'Upgraded to Paid Subscription!' : 'Access verified!',
+            'success'
+          );
+          await this.init();
+        } else {
+          this.showLicenseOverlay(res);
+          if (err && res?.error) {
+            err.textContent = res.error;
+            err.style.display = 'block';
+          }
+        }
+      } finally {
+        refreshBtn.disabled = false;
+        refreshBtn.textContent = 'I Purchased — Refresh Access';
       }
     });
   }
 
-  showLicenseOverlay(isExpired = false) {
+  showLicenseOverlay(accessInfo = {}) {
+    this._isUnlocked = false;
+    this.stopLiveAccessMonitor();
+
+    const info = typeof accessInfo === 'boolean'
+      ? { expired: accessInfo, status: accessInfo ? 'expired' : 'unauthenticated' }
+      : (accessInfo || {});
+
     const overlay = document.getElementById('licenseOverlay');
+    const banner = document.getElementById('licenseStatusBanner');
+    const badge = document.getElementById('licenseStatusBadge');
+    const bannerMsg = document.getElementById('licenseStatusMessage');
+    const expiredActions = document.getElementById('expiredActions');
+    const buyCta = document.getElementById('buyAccessCta');
     const err = document.getElementById('licenseError');
-    const title = overlay.querySelector('h2');
-    const desc = overlay.querySelector('p');
-    const btn = document.getElementById('activateLicenseBtn');
+    const title = document.getElementById('licenseTitle');
+    const desc = document.getElementById('licenseDesc');
     const link = document.getElementById('buySubscriptionLink');
+    const sidebarBar = document.getElementById('accessStatusBar');
+
+    if (sidebarBar) sidebarBar.style.display = 'none';
+    const pricingUrl = this.getPricingUrl();
+    if (link) link.href = pricingUrl;
+    if (buyCta) buyCta.href = pricingUrl;
 
     overlay.style.display = 'flex';
-    
+    banner.classList.remove('revoked');
+
+    const isExpired = info.status === 'expired' || Boolean(info.expired);
+    const isRevoked = info.status === 'revoked' || Boolean(info.revoked);
+    const isNetworkError = info.status === 'network_error' || Boolean(info.networkError);
+    const isTrial = info.accessType === 'trial' || info.code === 'TRIAL_EXPIRED' || info.statusCode === 'TRIAL_EXPIRED';
+
     if (isExpired) {
-      title.textContent = 'Subscription Expired';
-      desc.textContent = 'Your subscription has expired. Please renew to continue extracting leads.';
-      err.textContent = 'Your subscription has expired.';
-      err.style.display = 'block';
-      link.textContent = 'Buy Subscription Again';
-    } else {
-      title.textContent = 'Activate Pro';
-      desc.textContent = 'Enter your license key to unlock unlimited lead extraction.';
+      banner.style.display = 'block';
+      expiredActions.style.display = 'flex';
+      badge.textContent = isTrial ? 'TRIAL EXPIRED' : 'SUBSCRIPTION EXPIRED';
+      title.textContent = isTrial ? 'Your Trial Has Expired' : 'Subscription Expired';
+      desc.textContent = isTrial
+        ? 'Your one-time trial has ended and cannot be reactivated. Purchase full access to continue extracting and exporting leads.'
+        : 'Your approved subscription period has ended. Submit a renewal payment to restore full access.';
+      const endedStr = info.expiresAt ? ` Ended: ${new Date(info.expiresAt).toLocaleString()}.` : '';
+      bannerMsg.textContent = (info.error || (isTrial ? 'Trial period expired.' : 'Subscription expired.')) + endedStr;
+      if (buyCta) {
+        buyCta.style.display = 'flex';
+        buyCta.textContent = isTrial ? 'Purchase Full Access' : 'Renew Subscription';
+      }
+      if (link) link.textContent = 'Need help or want to check payment status? Open Dashboard';
       err.textContent = '';
       err.style.display = 'none';
-      link.textContent = 'Don\'t have a key? Buy Subscription';
+      this.switchLicenseMode('paid');
+    } else if (isRevoked) {
+      banner.style.display = 'block';
+      banner.classList.add('revoked');
+      expiredActions.style.display = 'flex';
+      badge.textContent = 'ACCESS REVOKED';
+      title.textContent = 'Access Revoked';
+      desc.textContent = 'This license key or subscription has been revoked by the administrator.';
+      bannerMsg.textContent = info.error || 'Access revoked.';
+      if (buyCta) {
+        buyCta.style.display = 'flex';
+        buyCta.textContent = 'Purchase Full Access';
+      }
+      err.textContent = '';
+      err.style.display = 'none';
+      this.switchLicenseMode('paid');
+    } else if (isNetworkError) {
+      banner.style.display = 'block';
+      expiredActions.style.display = 'flex';
+      badge.textContent = 'SERVER VERIFICATION REQUIRED';
+      title.textContent = 'Verification Unavailable';
+      desc.textContent = 'Could not reach the backend server to verify your active access status.';
+      bannerMsg.textContent = info.error || 'Please verify your internet connection and retry.';
+      if (buyCta) buyCta.style.display = 'none';
+      err.textContent = '';
+      err.style.display = 'none';
+    } else {
+      banner.style.display = 'none';
+      expiredActions.style.display = 'none';
+      title.textContent = 'Activate Access';
+      desc.textContent = 'Enter your paid license key or one-time trial key to unlock Map Leadify.';
+      if (link) link.textContent = 'Don\'t have a key? Purchase Full Access';
+      if (info.error && info.status !== 'unauthenticated') {
+        err.textContent = info.error;
+        err.style.display = 'block';
+      } else {
+        err.textContent = '';
+        err.style.display = 'none';
+      }
+      if (info.status === 'trial_not_activated') {
+        this.switchLicenseMode('trial');
+      }
     }
+  }
+
+  formatRemainingTime(expiresAt, remainingMs) {
+    const ms = expiresAt
+      ? Math.max(0, new Date(expiresAt).getTime() - Date.now())
+      : Math.max(0, Number(remainingMs || 0));
+    if (!ms) return 'Expired';
+    const totalMinutes = Math.floor(ms / 60000);
+    const days = Math.floor(totalMinutes / (24 * 60));
+    const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+    const mins = totalMinutes % 60;
+    if (days >= 1) return `${days}d ${hours}h left`;
+    if (hours >= 1) return `${hours}h ${mins}m left`;
+    return `${Math.max(1, mins)}m left`;
+  }
+
+  renderAccessStatus(accessInfo) {
+    const bar = document.getElementById('accessStatusBar');
+    const badge = document.getElementById('accessTypeBadge');
+    const remainingEl = document.getElementById('accessRemainingText');
+    const upgradeLink = document.getElementById('upgradeToProLink');
+    if (!bar || !accessInfo) return;
+
+    const isTrial = accessInfo.accessType === 'trial';
+    bar.style.display = 'flex';
+
+    if (badge) {
+      badge.textContent = isTrial ? 'TRIAL' : 'PRO';
+      badge.className = `access-badge ${isTrial ? 'trial' : 'pro'}`;
+    }
+
+    if (upgradeLink) {
+      upgradeLink.href = this.getPricingUrl();
+      upgradeLink.style.display = isTrial ? 'inline-block' : 'none';
+    }
+
+    if (remainingEl) {
+      const remainingText = accessInfo.expiresAt
+        ? this.formatRemainingTime(accessInfo.expiresAt, accessInfo.remainingMs)
+        : 'Active';
+      remainingEl.textContent = remainingText;
+      remainingEl.title = accessInfo.expiresAt
+        ? `Expires: ${new Date(accessInfo.expiresAt).toLocaleString()}`
+        : 'Active';
+    }
+  }
+
+  startLiveAccessMonitor(accessInfo) {
+    this.stopLiveAccessMonitor();
+
+    // Periodic server verification while popup stays open
+    this._accessPollTimer = setInterval(async () => {
+      if (!this._isUnlocked) return;
+      const res = await this.verifyLicenseWithServer();
+      if (!res?.valid) {
+        this.handleAccessLost(res);
+      } else {
+        this.accessState = res;
+        this.renderAccessStatus(res);
+      }
+    }, 30 * 1000);
+
+    // Schedule exact expiry boundary re-verification when expiry is near
+    if (accessInfo?.expiresAt) {
+      const ms = new Date(accessInfo.expiresAt).getTime() - Date.now();
+      if (ms > 0 && ms <= 6 * 60 * 60 * 1000) {
+        this._accessExpiryTimer = setTimeout(async () => {
+          const res = await this.verifyLicenseWithServer();
+          if (!res?.valid) this.handleAccessLost(res);
+        }, ms + 1000);
+      }
+    }
+  }
+
+  stopLiveAccessMonitor() {
+    if (this._accessPollTimer) {
+      clearInterval(this._accessPollTimer);
+      this._accessPollTimer = null;
+    }
+    if (this._accessExpiryTimer) {
+      clearTimeout(this._accessExpiryTimer);
+      this._accessExpiryTimer = null;
+    }
+  }
+
+  handleAccessLost(accessInfo = {}) {
+    if (this.isExtracting) {
+      if (this.currentTabId) {
+        chrome.tabs.sendMessage(this.currentTabId, {
+          action: 'stopExtraction',
+          sessionId: this.activeSessionId
+        }).catch(() => {});
+      }
+      this.isExtracting = false;
+      this.activeSessionId = null;
+      this.stopElapsedTimer();
+      this.updateExtractionButtons();
+    }
+
+    ['addLeadModal', 'editLeadModal', 'savedLeadViewModal', 'confirmModal'].forEach(id => this.closeModal(id));
+    this.showLicenseOverlay(accessInfo);
+  }
+
+  async ensureValidAccess() {
+    const res = await this.verifyLicenseWithServer();
+    if (!res || !res.valid) {
+      this.handleAccessLost(res);
+      return false;
+    }
+    this.accessState = res;
+    this.renderAccessStatus(res);
+    return true;
   }
 
   // ── Settings ──────────────────────────────────────────────────────────────
@@ -451,11 +813,19 @@ class LeadExtractor {
 
   // ── Runtime Message Listeners ─────────────────────────────────────────────
   bindRuntimeListeners() {
+    if (this._runtimeListenersBound) return;
+    this._runtimeListenersBound = true;
+
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const action = message?.action;
 
       if (action === 'sessionUpdate') {
         this.handleSessionUpdate(message.session);
+        return false;
+      }
+
+      if (action === 'accessRevoked') {
+        this.handleAccessLost(message.licenseState || { status: 'expired', expired: true });
         return false;
       }
 
@@ -483,6 +853,11 @@ class LeadExtractor {
 
   handleSessionUpdate(session) {
     if (!session) return;
+    if (session.licenseRevoked) {
+      this.handleAccessLost(session.licenseState || { status: 'expired', expired: true });
+      return;
+    }
+
     this.isExtracting = session.isExtracting;
     this.activeSessionId = session.sessionId;
 
@@ -530,6 +905,10 @@ class LeadExtractor {
   }
 
   async handleSaveLeadsRequest(leadsData, sendResponse) {
+    if (!(await this.ensureValidAccess())) {
+      sendResponse({ saved: false, reason: 'unauthorized' });
+      return;
+    }
     if (!Array.isArray(leadsData) || leadsData.length === 0) {
       sendResponse({ saved: false, reason: 'no_data' });
       return;
@@ -568,6 +947,36 @@ class LeadExtractor {
 
   // ── Event Binding ─────────────────────────────────────────────────────────
   bindEvents() {
+    if (this._eventsBound) return;
+    this._eventsBound = true;
+
+    // Access status controls (sidebar)
+    document.getElementById('sidebarRefreshAccessBtn')?.addEventListener('click', async () => {
+      const btn = document.getElementById('sidebarRefreshAccessBtn');
+      btn?.classList.add('spinning');
+      try {
+        const prevType = this.accessState?.accessType;
+        const ok = await this.ensureValidAccess();
+        if (ok) {
+          if (prevType === 'trial' && this.accessState?.accessType === 'paid') {
+            this.showToast('Upgraded to Paid Pro Subscription!', 'success');
+          } else {
+            this.showToast('Access status verified', 'success');
+          }
+        }
+      } finally {
+        setTimeout(() => btn?.classList.remove('spinning'), 500);
+      }
+    });
+
+    document.getElementById('logoutLicenseBtn')?.addEventListener('click', async () => {
+      const confirmed = await this.confirm('Switch Key / Sign Out', 'Remove the saved license or trial key from this browser?');
+      if (!confirmed) return;
+      await new Promise(resolve => chrome.runtime.sendMessage({ action: 'logoutLicense' }, resolve));
+      this.accessState = null;
+      this.handleAccessLost({ status: 'unauthenticated' });
+    });
+
     // Sidebar nav
     document.querySelectorAll('.nav-btn').forEach(btn => {
       btn.addEventListener('click', () => this.switchSidebarPanel(btn.dataset.panel, btn));
@@ -728,11 +1137,8 @@ class LeadExtractor {
     if (this.isExtracting) return;
 
     try {
-      // ── Verify License Before Extraction ─────────────────────────────────────────
-      const stateResponse = await new Promise(resolve => chrome.runtime.sendMessage({ action: 'getLicenseState' }, resolve));
-      if (!stateResponse || !stateResponse.sessionToken || !stateResponse.valid) {
-        const isExpired = stateResponse && stateResponse.sessionToken && !stateResponse.valid;
-        this.showLicenseOverlay(isExpired);
+      // ── Live Backend Access Verification Before Extraction ───────────────────────
+      if (!(await this.ensureValidAccess())) {
         return;
       }
       // ───────────────────────────────────────────────────────────────────────────
@@ -756,12 +1162,16 @@ class LeadExtractor {
       this.updateLiveStats({ totalFound: 0, totalSaved: 0, totalFailed: 0 });
       this.startElapsedTimer(this.extractionStartTime);
 
-      // Notify background
-      await chrome.runtime.sendMessage({
+      // Notify background (which also re-verifies backend access)
+      const bgStart = await chrome.runtime.sendMessage({
         action: 'extractionStarted',
         sessionId: this.activeSessionId,
         tabId: tab.id
       });
+      if (bgStart && bgStart.ok === false) {
+        this.handleAccessLost(bgStart.licenseState || { status: 'expired', error: bgStart.error });
+        throw new Error(bgStart.error || 'Access denied');
+      }
 
       // Send extract command to content script with retry mechanism
       let response;
@@ -964,6 +1374,7 @@ class LeadExtractor {
   // ── Save All Leads ────────────────────────────────────────────────────────
   async saveAllExtractedLeads() {
     try {
+      if (!(await this.ensureValidAccess())) return;
       if (!this.extractedLeads || this.extractedLeads.length === 0) {
         this.showToast('No extracted leads to save', 'warning');
         return;
@@ -1442,6 +1853,7 @@ class LeadExtractor {
 
   // ── WhatsApp ──────────────────────────────────────────────────────────────
   async openWhatsApp(id) {
+    if (!(await this.ensureValidAccess())) return;
     const lead = this.leads.find(l => l.id === id);
     if (!lead || !this.hasWhatsAppNumber(lead)) {
       this.showToast('No valid phone number for WhatsApp', 'error');
@@ -1533,7 +1945,8 @@ class LeadExtractor {
   }
 
   // ── Export ────────────────────────────────────────────────────────────────
-  exportCSV() {
+  async exportCSV() {
+    if (!(await this.ensureValidAccess())) return;
     if (this.leads.length === 0) { this.showToast('No leads to export', 'error'); return; }
     const data = this.leads.map(l => this.buildExportRow(l));
     const csv = Papa.unparse(data);
@@ -1541,7 +1954,8 @@ class LeadExtractor {
     this.showToast(`Exported ${this.leads.length} leads as CSV`, 'success');
   }
 
-  exportExcel() {
+  async exportExcel() {
+    if (!(await this.ensureValidAccess())) return;
     if (this.leads.length === 0) { this.showToast('No leads to export', 'error'); return; }
     const data = this.leads.map(l => this.buildExportRow(l));
     const worksheet = XLSX.utils.json_to_sheet(data);
@@ -1714,8 +2128,4 @@ class LeadExtractor {
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   window.app = new LeadExtractor();
-  const buyLink = document.getElementById('buySubscriptionLink');
-  if (buyLink && typeof ENV !== 'undefined' && ENV.APP_URL) {
-    buyLink.href = ENV.APP_URL;
-  }
 });

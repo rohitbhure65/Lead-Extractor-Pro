@@ -5,6 +5,7 @@
   "description": "Extract, manage, and export leads from any website",
   "permissions": [
     "activeTab",
+    "alarms",
     "storage",
     "tabs",
     "windows",

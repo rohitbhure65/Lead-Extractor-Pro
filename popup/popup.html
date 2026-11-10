@@ -10,20 +10,51 @@
 
 <body>
   <div class="app-container">
-    <!-- License Overlay -->
+    <!-- License & Trial Overlay -->
     <div id="licenseOverlay" class="license-overlay" style="display: none;">
       <div class="license-card">
-        <div class="brand-icon mx-auto mb-4" style="width: 48px; height: 48px; background: transparent; box-shadow: none;">
+        <div class="brand-icon mx-auto mb-4" style="width: 44px; height: 44px; background: transparent; box-shadow: none; margin: 0 auto 10px;">
           <img src="../icons/icon48.png" style="width: 100%; height: 100%; object-fit: contain;" alt="Logo">
         </div>
-        <h2>Activate Pro</h2>
-        <p>Enter your license key to unlock unlimited lead extraction.</p>
-        <div class="form-field">
-          <input type="text" id="licenseKeyInput" placeholder="Enter API Key">
+
+        <div id="licenseStatusBanner" class="license-status-banner" style="display: none;">
+          <span id="licenseStatusBadge" class="license-status-badge">EXPIRED</span>
+          <p id="licenseStatusMessage" class="license-status-msg"></p>
         </div>
-        <button id="activateLicenseBtn" class="btn-primary" style="width: 100%; margin-bottom: 12px;">Activate Now</button>
-        <a href="#" id="buySubscriptionLink" target="_blank" class="buy-link">Don't have a key? Buy Subscription</a>
-        <div id="licenseError" class="license-error"></div>
+
+        <h2 id="licenseTitle">Activate Access</h2>
+        <p id="licenseDesc">Enter your paid license key or one-time trial key to unlock Map Leadify.</p>
+
+        <div id="expiredActions" class="expired-actions" style="display: none;">
+          <a href="#" id="buyAccessCta" target="_blank" class="btn-primary license-cta-link">Purchase Full Access</a>
+          <button type="button" id="refreshAccessBtn" class="btn-outline-full">I Purchased — Refresh Access</button>
+        </div>
+
+        <div id="licenseModeTabs" class="license-mode-tabs">
+          <button type="button" id="modePaidTab" class="license-tab active" data-mode="paid">License / Key</button>
+          <button type="button" id="modeTrialTab" class="license-tab" data-mode="trial">Activate Trial</button>
+        </div>
+
+        <div id="paidKeySection">
+          <div class="form-field">
+            <input type="text" id="licenseKeyInput" placeholder="Enter Paid API Key or Trial Key (MLT-...)">
+          </div>
+          <button type="button" id="activateLicenseBtn" class="btn-primary" style="width: 100%; margin-bottom: 10px;">Activate Now</button>
+        </div>
+
+        <div id="trialKeySection" style="display: none;">
+          <div class="form-field">
+            <input type="text" id="trialKeyInput" placeholder="Enter Trial Key (e.g. MLT-...)">
+          </div>
+          <div class="form-field">
+            <input type="email" id="trialEmailInput" placeholder="Client Email (optional confirmation)">
+          </div>
+          <button type="button" id="activateTrialBtn" class="btn-primary" style="width: 100%; margin-bottom: 10px;">Activate One-Time Trial</button>
+          <p class="trial-policy-note">One-time trial only. Once expired or used, trials cannot be reactivated.</p>
+        </div>
+
+        <a href="#" id="buySubscriptionLink" target="_blank" class="buy-link">Don't have a key? Purchase Full Access</a>
+        <div id="licenseError" class="license-error" style="display: none;"></div>
       </div>
     </div>
 
@@ -37,6 +68,17 @@
           <div class="brand-info">
             <h1>Map Leadify</h1>
             <span class="version" id="versionBadge">v1.0.0</span>
+          </div>
+        </div>
+        <div id="accessStatusBar" class="access-status-bar" style="display: none;">
+          <div class="access-status-left">
+            <span id="accessTypeBadge" class="access-badge pro">PRO</span>
+            <span id="accessRemainingText" class="access-remaining">Active</span>
+          </div>
+          <div class="access-status-actions">
+            <a href="#" id="upgradeToProLink" target="_blank" class="access-upgrade-link" style="display: none;">Upgrade</a>
+            <button type="button" id="sidebarRefreshAccessBtn" class="access-action-btn" title="Verify access with server">⟳</button>
+            <button type="button" id="logoutLicenseBtn" class="access-action-btn" title="Switch key / sign out">⎋</button>
           </div>
         </div>
       </header>

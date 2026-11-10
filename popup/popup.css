@@ -1801,16 +1801,204 @@ body {
 }
 .license-card {
   background: var(--bg-card);
-  padding: 32px;
+  padding: 26px 28px;
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-lg);
   border: 1px solid var(--border);
   text-align: center;
-  max-width: 360px;
-  width: 90%;
+  max-width: 410px;
+  width: 92%;
+  max-height: 92vh;
+  overflow-y: auto;
 }
-.license-card h2 { margin-bottom: 8px; font-size: 24px; color: var(--text-primary); }
-.license-card p { margin-bottom: 24px; color: var(--text-secondary); font-size: 13px; }
-.license-card .buy-link { font-size: 13px; color: var(--accent-blue); text-decoration: none; display: block; margin-top: 16px; transition: color 0.2s; }
+.license-card h2 { margin-bottom: 6px; font-size: 20px; color: var(--text-primary); }
+.license-card p { margin-bottom: 16px; color: var(--text-secondary); font-size: 12px; }
+.license-card .buy-link { font-size: 12px; color: var(--accent-blue); text-decoration: none; display: block; margin-top: 12px; transition: color 0.2s; }
 .license-card .buy-link:hover { color: #fff; }
-.license-card .license-error { color: var(--accent-red); font-size: 13px; margin-top: 12px; }
+.license-card .license-error { color: var(--accent-red); font-size: 12px; margin-top: 10px; background: rgba(248, 81, 73, 0.12); border: 1px solid rgba(248, 81, 73, 0.35); border-radius: var(--radius-sm); padding: 8px 10px; text-align: left; }
+
+.license-status-banner {
+  background: rgba(227, 179, 65, 0.12);
+  border: 1px solid rgba(227, 179, 65, 0.35);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  text-align: left;
+}
+.license-status-banner.revoked {
+  background: rgba(248, 81, 73, 0.12);
+  border-color: rgba(248, 81, 73, 0.4);
+}
+.license-status-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(227, 179, 65, 0.25);
+  color: var(--accent-orange);
+  margin-bottom: 6px;
+}
+.license-status-banner.revoked .license-status-badge {
+  background: rgba(248, 81, 73, 0.25);
+  color: #ff8080;
+}
+.license-status-msg {
+  margin-bottom: 0 !important;
+  font-size: 12px !important;
+  color: var(--text-primary) !important;
+  line-height: 1.45;
+}
+
+.expired-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.license-cta-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  text-decoration: none;
+  padding: 9px 14px;
+  border-radius: var(--radius-md);
+  font-weight: 600;
+  font-size: 13px;
+}
+.btn-outline-full {
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.btn-outline-full:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--accent-blue);
+}
+.btn-outline-full:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.license-mode-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  background: var(--bg-deep);
+  padding: 4px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  margin-bottom: 14px;
+}
+.license-tab {
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.license-tab.active {
+  background: var(--bg-active);
+  color: var(--accent-hover);
+}
+.trial-policy-note {
+  margin-bottom: 4px !important;
+  font-size: 11px !important;
+  color: var(--text-muted) !important;
+}
+
+.access-status-bar {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.access-status-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.access-badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+.access-badge.pro {
+  background: rgba(46, 160, 67, 0.2);
+  color: var(--accent-hover);
+  border: 1px solid rgba(46, 160, 67, 0.4);
+}
+.access-badge.trial {
+  background: rgba(227, 179, 65, 0.2);
+  color: var(--accent-orange);
+  border: 1px solid rgba(227, 179, 65, 0.4);
+}
+.access-remaining {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.access-status-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.access-upgrade-link {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent-hover);
+  background: rgba(46, 160, 67, 0.14);
+  border: 1px solid rgba(46, 160, 67, 0.35);
+  border-radius: 4px;
+  padding: 2px 6px;
+  text-decoration: none;
+}
+.access-upgrade-link:hover {
+  background: rgba(46, 160, 67, 0.25);
+}
+.access-action-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.access-action-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
